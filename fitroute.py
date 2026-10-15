@@ -30,6 +30,17 @@ DISTANCE = 5
 SINT32 = 5
 UINT32 = 6
 
+# GPS jamming writes 0x7FFFFFFF semicircles rather than omitting the field.
+INVALID = 0x7FFFFFFF
+
+# A fix further than this from the route is spoofed, not ridden.
+ON_ROUTE = 25.0
+
+# How far behind and ahead of the last trusted fix to look for the next one,
+# so a route that passes the same street twice cannot capture it.
+SEARCH_BACK = 300.0
+SEARCH_AHEAD = 1500.0
+
 
 def haversine(first, second):
     lat1, lon1 = first
@@ -75,12 +86,76 @@ def locate(points, cumulative, target):
     return lat1 + (lat2 - lat1) * fraction, lon1 + (lon2 - lon1) * fraction
 
 
+def project(points, cumulative, fix, low, high):
+    """Return (metres off route, metres along it) for the nearest point.
+
+    Only route segments that overlap [low, high] metres along are considered.
+    """
+    best = (math.inf, None)
+    first = max(0, bisect.bisect_right(cumulative, low) - 1)
+    last = min(len(points) - 1, bisect.bisect_right(cumulative, high))
+    # An equirectangular plane around the fix is exact enough at this scale.
+    lat0, lon0 = fix
+    x_scale = math.radians(EARTH_RADIUS) * math.cos(math.radians(lat0))
+    y_scale = math.radians(EARTH_RADIUS)
+    for index in range(first, last):
+        (lat1, lon1), (lat2, lon2) = points[index], points[index + 1]
+        ax, ay = (lon1 - lon0) * x_scale, (lat1 - lat0) * y_scale
+        dx, dy = (lon2 - lon1) * x_scale, (lat2 - lat1) * y_scale
+        length = dx * dx + dy * dy
+        fraction = 0.0 if length == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length))
+        off = math.hypot(ax + fraction * dx, ay + fraction * dy)
+        if off < best[0]:
+            span = cumulative[index + 1] - cumulative[index]
+            best = (off, cumulative[index] + fraction * span)
+    return best
+
+
+def anchor(records, points, cumulative):
+    """Return [(ride metres, route metres), ...] for the trusted fixes.
+
+    A fix is trusted when it lies on the route, which rejects both the
+    jammer's sentinel and the coordinates it spoofs. Anchors only move
+    forward, so GPS jitter at a standstill cannot fold the ride back.
+    """
+    anchors = []
+    along = 0.0
+    for record in records:
+        if record['distance'] is None or record['fix'] is None:
+            continue
+        off, along_fix = project(points, cumulative, record['fix'],
+                                 along - SEARCH_BACK, along + SEARCH_AHEAD)
+        if off > ON_ROUTE:
+            continue
+        record['trusted'] = True
+        along = along_fix
+        if not anchors or (record['distance'] > anchors[-1][0]
+                           and along > anchors[-1][1]):
+            anchors.append((record['distance'], along))
+    return anchors
+
+
+def interpolate(anchors, distance):
+    """Map a ride distance to a route distance through the anchors.
+
+    Past either end the nearest anchor's offset carries on unchanged.
+    """
+    rides = [ride for ride, _ in anchors]
+    index = bisect.bisect_right(rides, distance) - 1
+    if index < 0:
+        return distance + anchors[0][1] - anchors[0][0]
+    if index == len(anchors) - 1:
+        return distance + anchors[-1][1] - anchors[-1][0]
+    (ride1, route1), (ride2, route2) = anchors[index], anchors[index + 1]
+    return route1 + (route2 - route1) * (distance - ride1) / (ride2 - ride1)
+
+
 def read_records(data):
     """Return (records, data_end).
 
-    One record per record message, holding its distance in metres and the
-    offsets where its position fields live, or None when the record was
-    written without them.
+    One record per record message, holding its distance in metres, its fix in
+    degrees (None when invalid) and the offsets where its position fields
+    live, or None when the record was written without them.
     """
     records = []
 
@@ -88,7 +163,7 @@ def read_records(data):
         if global_num != RECORD:
             return
         records.append({'distance': None, 'lat': None, 'lon': None,
-                        'endian': '<'})
+                        'fix': None, 'trusted': False, 'endian': '<'})
 
     def visit(global_num, number, base_type, endian, pos, size, developer):
         if global_num != RECORD or developer or not records:
@@ -104,11 +179,25 @@ def read_records(data):
         elif number == POSITION_LONG and size == 4 and base_type & 0x1F == SINT32:
             current['lon'] = pos
 
-    return records, walk(data, visit, start)
+    end = walk(data, visit, start)
+    for record in records:
+        if record['lat'] is None or record['lon'] is None:
+            continue
+        endian = record['endian']
+        lat = struct.unpack_from(endian + 'i', data, record['lat'])[0]
+        lon = struct.unpack_from(endian + 'i', data, record['lon'])[0]
+        if INVALID not in (abs(lat), abs(lon)):
+            record['fix'] = (lat / SEMICIRCLES, lon / SEMICIRCLES)
+    return records, end
 
 
-def graft(data, points, scale=True, reverse=False):
-    """Return a copy of data with record positions taken from the route."""
+def graft(data, points, scale=True, reverse=False, gaps_only=False):
+    """Return a copy of data with record positions taken from the route.
+
+    gaps_only keeps every fix that lies on the route and places the rest
+    between them, so the wheel sensor's drift resets at each trusted fix
+    instead of accumulating over the whole ride.
+    """
     if reverse:
         points = points[::-1]
     cumulative = measure(points)
@@ -127,16 +216,31 @@ def graft(data, points, scale=True, reverse=False):
     # instead of drifting past it by that fraction.
     ratio = route_length / ride_length if scale else 1.0
 
+    # Without trusted fixes this is plain scaling: start on start, finish on
+    # finish, or with no scale the raw distance.
+    anchors = anchor(records, points, cumulative) if gaps_only else []
+    trusted = len(anchors)
+    if scale:
+        inside = [(ride, route) for ride, route in anchors
+                  if 0 < ride < ride_length and 0 < route < route_length]
+        anchors = [(0.0, 0.0)] + inside + [(ride_length, route_length)]
+    elif not anchors:
+        anchors = [(0.0, 0.0)]
+
     out = bytearray(data)
-    stats = {'records': len(records), 'placed': 0, 'skipped': 0,
-             'route_length': route_length, 'ride_length': ride_length,
-             'ratio': ratio}
+    stats = {'records': len(records), 'placed': 0, 'skipped': 0, 'kept': 0,
+             'anchors': trusted, 'route_length': route_length,
+             'ride_length': ride_length, 'ratio': ratio}
 
     for record in records:
         if record['distance'] is None or record['lat'] is None or record['lon'] is None:
             stats['skipped'] += 1
             continue
-        lat, lon = locate(points, cumulative, record['distance'] * ratio)
+        if record['trusted']:
+            stats['kept'] += 1
+            continue
+        lat, lon = locate(points, cumulative,
+                          interpolate(anchors, record['distance']))
         endian = record['endian']
         struct.pack_into(endian + 'i', out, record['lat'],
                          round(lat * SEMICIRCLES))
@@ -214,12 +318,18 @@ def main():
                         help='re-encode the file to add positions, for a base '
                              'recorded with no position field at all '
                              '(needs fit-tool)')
+    parser.add_argument('--gaps-only', action='store_true',
+                        help='keep fixes that lie on the route and place only '
+                             'the missing, invalid or spoofed ones between them')
     parser.add_argument('-n', '--dry-run', action='store_true',
                         help='report the match without writing')
     args = parser.parse_args()
 
     if not args.out and not args.dry_run:
         parser.error('-o/--out is required unless --dry-run')
+    if args.gaps_only and args.rebuild:
+        parser.error('--gaps-only needs fixes to keep; --rebuild is for a '
+                     'base with none')
 
     try:
         points = read_route(args.route)
@@ -229,7 +339,7 @@ def main():
         else:
             data = open(args.base, 'rb').read()
             patched, stats = graft(data, points, not args.no_scale,
-                                   args.reverse)
+                                   args.reverse, args.gaps_only)
     except (ValueError, IndexError, KeyError, struct.error, ImportError,
             ElementTree.ParseError) as err:
         print(f'cannot graft: {err}', file=sys.stderr)
@@ -238,6 +348,9 @@ def main():
     print(f"route     {len(points)} points, {stats['route_length'] / 1000:.3f} km")
     print(f"ride      {stats['records']} records, {stats['ride_length'] / 1000:.3f} km")
     print(f"scale     {stats['ratio']:.5f}")
+    if args.gaps_only:
+        print(f"kept      {stats['kept']} fixes on the route, "
+              f"{stats['anchors']} anchors")
     print(f"placed    {stats['placed']}")
     print(f"skipped   {stats['skipped']} records without a distance to place"
           if args.rebuild else

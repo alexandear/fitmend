@@ -9,7 +9,7 @@ suite or linter.
 
 ```sh
 python fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
-python fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--rebuild] [-n]
+python fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--rebuild] [--gaps-only] [-n]
 python fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
 ```
 

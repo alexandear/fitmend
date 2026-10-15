@@ -59,6 +59,41 @@ the last point.
 Stops cost nothing: when distance stops advancing the position stops with it,
 so a traffic light reads as a stationary rider rather than a gap.
 
+### When part of the ride's GPS is good
+
+    python fitroute.py BASE.fit ROUTE.gpx --gaps-only -o OUT.fit
+
+A ride that ran into jamming halfway through has real fixes up to that point,
+and they beat any route. `--gaps-only` keeps every fix that lies within 25 m
+of the route and places only the rest: dropouts, the jammer's `180.0` sentinel,
+and spoofed coordinates, which land kilometres off the route and are rejected
+by that distance.
+
+    route     1222 points, 72.607 km
+    ride      9820 records, 72.503 km
+    scale     1.00144
+    kept      5892 fixes on the route, 5756 anchors
+    placed    3928
+    skipped   0 records written without a position field
+
+The kept fixes also anchor the match. A single scale over the whole ride
+assumes the wheel sensor's error is spread evenly along it. In that example
+the wheel was already 115 m behind the route by 48 km, so one ratio left
+points in the middle up to 130 m off. With anchors, each gap is placed between
+the trusted fixes on either side of it. Past the last fix, the default scaling
+runs the ride on to finish on the route's finish; with `--no-scale`, the last
+fix's offset carries on unchanged.
+
+Fixes are matched to the route by searching a window around the previous one,
+so a route that passes the same street twice cannot pull a fix onto the wrong
+pass.
+
+After the last fix the match is distance alone again, with nothing to correct
+it. The barometric altitude can cross-check it: if the recording's climbs sit
+consistently ahead of or behind the route's `<ele>` profile, the placement is
+off by that much. The tool does not apply that correction itself, since
+on a flat stretch it has nothing to go on.
+
 ### When the base has no position field at all
 
 A watch that recorded with the GPS off wrote no `position_lat`/`position_long`
