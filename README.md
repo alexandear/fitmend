@@ -120,6 +120,32 @@ never arises.
 Altitude is left alone. The barometric altimeter in the recording is better
 than a route's elevation lookup, and `<ele>` is not what you came for.
 
+## fitpace.py — pace the rest of a run from heart rate
+
+For a run whose distance is right up to some point and wrong after it, such
+as a watch that ran on its accelerometer and then got spoofed. Up to `--keep`
+km nothing changes. From there, pace follows heart rate. No dependencies.
+
+    python fitpace.py BASE.fit ROUTE.gpx --keep 6 -o PACED.fit
+    python fitroute.py PACED.fit ROUTE.gpx --rebuild -o OUT.fit
+
+    route     9.446 km
+    kept      6.000 km in 29:55, 4:59/km
+    model     speed = -0.212 + 0.0256 * hr m/s
+    modelled  3.194 km by heart rate, scaled 1.07898 to 3.446 km
+    paced     912 records at 4:25/km on average
+
+The kept part supplies the model: a straight line from heart rate to speed,
+fitted after the first two minutes, because heart rate lags pace while it
+climbs. Heart rate is averaged over a minute for the same reason. The model
+sets the shape of the rest of the run. The route sets its length, so the run
+finishes on the route's finish. The ratio shows how far the model alone would
+have missed.
+
+Rewritten fields: `record.distance`, the record speed fields, and the lap and
+session total distance and average and maximum speed. Positions are left to
+`fitroute.py`, which places each record at its new distance.
+
 ## fitshift.py — move an activity in time
 
 For a ride recorded with the watch on the wrong date, or one that needs to

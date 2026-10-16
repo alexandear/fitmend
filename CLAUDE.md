@@ -4,16 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Three standalone CLI scripts, run directly. There is no package, build step, test
+Four standalone CLI scripts, run directly. There is no package, build step, test
 suite or linter.
 
 ```sh
 python fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
 python fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--rebuild] [--gaps-only] [-n]
+python fitpace.py BASE.fit ROUTE.gpx --keep KM -o OUT.fit [-n]
 python fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
 ```
 
-`fitshift.py` and `fitroute.py`'s default path are stdlib-only. `fitgraft.py` and
+`fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only. `fitgraft.py` and
 `fitroute.py --rebuild` need `fit-tool`, which is not installed in the working
 environment — create a virtualenv first and verify any change to those paths in it:
 
