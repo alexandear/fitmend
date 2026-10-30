@@ -84,15 +84,62 @@ the trusted fixes on either side of it. Past the last fix, the default scaling
 runs the ride on to finish on the route's finish; with `--no-scale`, the last
 fix's offset carries on unchanged.
 
-Fixes are matched to the route by searching a window around the previous one,
-so a route that passes the same street twice cannot pull a fix onto the wrong
-pass.
+Fixes are matched to the route by searching a window around where the wheel
+sensor says the rider is, counted on from the previous fix, so a route that
+passes the same street twice cannot pull a fix onto the wrong pass. That
+matters most on a loop after a long gap: a ride spoofed for 44 km and then
+back on real GPS finishes next to the route's start, and a window left at the
+last fix would trust those finishing fixes as the first kilometre.
 
-After the last fix the match is distance alone again, with nothing to correct
-it. The barometric altitude can cross-check it: if the recording's climbs sit
-consistently ahead of or behind the route's `<ele>` profile, the placement is
-off by that much. The tool does not apply that correction itself, since
-on a flat stretch it has nothing to go on.
+### When the real GPS leaves the route
+
+    python fitroute.py BASE.fit ROUTE.gpx --broken-only -o OUT.fit
+
+`--gaps-only` decides by distance to the route, so it also replaces real
+fixes that are more than 25 m off it: a detour, a road beside the one drawn,
+the last metres to the door. `--broken-only` keeps those too and places only
+the records that are actually broken: no fix, the `180.0` sentinel, or a
+spoofed fix more than 2 km from anywhere on the route.
+
+    kept      6352 fixes on the route, 6249 anchors
+    kept      97 real fixes off the route
+    placed    522
+
+In that example `--gaps-only` would have placed 619 records. The other 97 were
+a 60 m offset near the start, the rider leaving the route just before the
+jamming began, and the finish. Only fixes on the route anchor the match; an
+off-route fix has no position along the route. Where a real off-route fix
+meets a placed one the track jumps back onto the route, because the path
+between them was never recorded. A spoofer that puts its fixes within 2 km of
+the route will pass as real; use `--gaps-only` for that.
+
+### When the hills say where the ride was
+
+    python fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills -o OUT.fit
+
+Between trusted fixes the match is distance alone, with nothing to correct
+it. The barometric altitude can: if the recording's climbs sit consistently
+ahead of or behind the route's `<ele>` profile, the placement is off by that
+much. `--hills` compares the two over a 3 km window every kilometre, tries
+every lag up to 300 m either way, and anchors the window's centre at the lag
+whose shape matches best. Only shape is compared, so the altimeter's absolute
+offset from the route's elevation model does not matter.
+
+    kept      1133 fixes on the route, 1112 anchors
+    hills     32 anchors from the climbs
+
+In that example the wheel put every climb of the first 43 km 50–190 m ahead
+of the route; with the anchors the residual is within a sample or two, and
+the altitude mismatch drops from 4–6 m RMS to about 1 m. On the stretch with
+real fixes the comparison already read zero, which is the check that the
+method finds the placement's error and not its own.
+
+A window is used only with at least 15 m of relief and a correlation of 0.95.
+A flat stretch has nothing to go on, and a wrong anchor is worse than none,
+so there the wheel sensor stands. Anchors that would make the ride run
+backwards are dropped. It is opt-in because it needs `<ele>` on every track
+point and a route that was actually followed: a detour shifts the climbs for
+a reason no lag can model.
 
 ### When the base has no position field at all
 
@@ -104,7 +151,24 @@ records only get a position if the file is decoded and encoded again.
 
 `--rebuild` is opt-in because it gives up what the in-place path protects: the
 output is what `fit_tool` understood of the input, not the input's own bytes.
-Everything else about the match is the same.
+Everything else about the match is the same, including `--gaps-only` and
+`--hills`, for a file whose GPS dropped out mid-ride and wrote stretches of
+records without the field:
+
+    python fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills --rebuild -o OUT.fit
+
+The match is still made on the file's own bytes and paired with `fit_tool`'s
+decode record by record; if the two disagree on the record count the file is
+not written.
+
+### Lap and session positions
+
+Laps and the session keep their own start, end and bounding-box positions,
+which still point wherever the spoofer said once the records have moved.
+Viewers place the activity from them, and Strava picks the timezone it shows
+the start time in from the location. Both paths recompute them from the
+placed records, in place: each lap from the records between its start and
+the next lap's, the session from all of them.
 
 ### What it does not do
 
@@ -113,9 +177,8 @@ Positions are written in place, into the fields the records already have, so
 nothing can be patched into them without re-encoding the file. In the example
 that is 53 of 9137 in nine short runs, the longest eight records; a viewer
 draws straight lines across them. The trade for that is fidelity: only
-`position_lat` and `position_long` bytes change, and a re-encode's risk of
-dropping the twenty-odd private Garmin message types in a modern FIT file
-never arises.
+position bytes change, and a re-encode's risk of dropping the twenty-odd
+private Garmin message types in a modern FIT file never arises.
 
 Altitude is left alone. The barometric altimeter in the recording is better
 than a route's elevation lookup, and `<ele>` is not what you came for.
@@ -203,7 +266,11 @@ other `uint32` is left alone, because a counter or an accumulator can decode
 as a perfectly plausible date — `event` field 3 in a Garmin file reads as
 2015 — and moving one would corrupt real data.
 
-Two further guards:
+Three further guards:
+
+- `0xFFFFFFFF` is the FIT "invalid" value, not a date. A private message can
+  fill field `253` with it, and counting it would stretch the window to the
+  end of time and move the sentinel into a real-looking date in 2126.
 
 - A private message can reuse field `253` for something that is not a date.
   Those values are recognised by falling outside the activity's own timestamp
