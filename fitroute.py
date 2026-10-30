@@ -631,7 +631,8 @@ def rebuild(
     if reverse:
         points = points[::-1]
         elevations = elevations and elevations[::-1]
-    data = open(base_path, 'rb').read()
+    with open(base_path, 'rb') as base_file:
+        data = base_file.read()
     records, anchors, cumulative, stats = match(
         data, points, scale, gaps_only, elevations, broken_only, limit
     )

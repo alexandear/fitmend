@@ -366,15 +366,39 @@ it does not, a record was misread and the file is not written.
 
 ## Tests
 
-    uv run python -m unittest
+    uv run python -m unittest                  # the whole suite
+    uv run --extra rebuild python -m unittest  # with the re-encoding paths too
 
-Each test builds the FIT bytes it needs, so the suite needs no sample activity
-and no `fit-tool`. It covers the library half of the three stdlib-only tools:
-the parser and the shift, the route geometry and the match, the distance
-rebuild, and the correctness traps each of them exists to avoid — a private
-field 253 that is a counter rather than a date, the invalid sentinels for a
-date and for a position, a record written with no position field, and a route
-that passes the same point twice.
+`test_fitmend.py` builds the FIT bytes of every case it covers, so it needs no
+sample activity and no `fit-tool`. It covers the library half of the three
+stdlib-only tools: the parser and the shift, the route geometry and the match,
+the distance rebuild, and the correctness traps each of them exists to avoid —
+a private field 253 that is a counter rather than a date, the invalid
+sentinels for a date and for a position, a record written with no position
+field, and a route that passes the same point twice.
+
+A file built by a test is a file written to be understood, which is the one
+thing a file off a watch never is. So `test_tracks.py` runs the same library
+halves over two real activities, committed in `testdata/` with the route each
+one covered:
+
+- `Run_16.10.2026.fit` with `16.10.2027.gpx`, a jammed run. Big-endian, full
+  of private Garmin message types, 162 of its 2708 records carrying a position
+  field at all, the 94 fixes among those spoofed to another continent, 19 of
+  its date fields holding the invalid sentinel, and 16.605 km of odometer
+  integrated out of the jumps for a run of 9.446 km.
+- `Lunch_Run.fit` with `13.10.2026.gpx`, a run recorded with the GPS off. Not
+  one of its 2517 records carries a position field, so only the re-encoding
+  path can give it a position at all, and it is where `--rebuild` and
+  `fitgraft.py` are tested — the class that needs `fit-tool`, and the only one
+  that is skipped without it.
+
+What those tests assert is invariants, not golden bytes: that the parse ends
+on the file CRC, that the only bytes a tool rewrote belong to the fields it
+owns, that every placed fix lands on the route, that the sensor streams read
+back exactly as recorded, and that the rebuilt odometer agrees with the route
+to within a few per cent. A deliberate change to an output does not rewrite
+them; a regression fails them.
 
 ## Style
 

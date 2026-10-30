@@ -22,21 +22,37 @@ creates and updates `.venv` itself; never `pip install` into it, and add a
 dependency with `uv add` so `uv.lock` stays in step.
 
 ```sh
-uv run python -m unittest          # the whole suite
+uv run python -m unittest                  # the whole suite
+uv run --extra rebuild python -m unittest  # with the re-encoding paths too
 uv run python -m unittest -v test_fitmend.Retime
 ```
 
+The suite is two modules.
+
 `test_fitmend.py` covers the library half of `fitshift.py`, `fitroute.py` and
 `fitpace.py`. Every test builds the FIT bytes it needs with its own `encode()`
-helper, so the suite needs neither `fit-tool` nor a file from `tracks/` (which
-is gitignored, and holds real activities that cannot go in the repo). Add
-tests there rather than reaching for a sample file; the `fitgraft.py` and
-`--rebuild` paths are the two the suite does not reach.
+helper, so it needs neither `fit-tool` nor a sample file. Add a test here
+whenever the case can be written as bytes: it is the fast half of the suite
+and it states on the page the case it covers.
+
+`test_tracks.py` runs the same library halves over the four real files in
+`testdata/`, which are committed so that the suite can show the tools read
+what a watch actually wrote: a big-endian export full of private Garmin
+messages whose GPS was jammed, and a run recorded with no position field at
+all, each with the GPX route it covered. The module docstring says what each
+file holds, and the tests assert invariants rather than golden bytes — what
+moved and what did not, that placed fixes land on the route, that the parse
+still ends on the file CRC — so a deliberate change does not rewrite them.
+`test_tracks.Rebuild` is the one class that covers `fitgraft.py` and
+`fitroute.py --rebuild`; it is skipped unless `fit-tool` is installed.
+
+`tracks/` is gitignored and holds the rest of the real activities, which stay
+out of the repo.
 
 `-n`/`--dry-run` on `fitroute.py` and `fitshift.py` reports the result without
-writing; use it against `tracks/*.fit` to check a change. `tracks/` holds real
-sample activities (`Lunch_Ride.fit`, `Morning_Run.fit`, a `09.10.2026.gpx` route)
-alongside already-produced outputs.
+writing; use it against `tracks/*.fit` or `testdata/*.fit` to check a change.
+`tracks/` holds real sample activities (`Lunch_Ride.fit`, `Morning_Run.fit`, a
+`09.10.2026.gpx` route) alongside already-produced outputs.
 
 `ruff` is the formatter and the linter, configured in `pyproject.toml`. Run
 both before calling a change done:
