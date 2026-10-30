@@ -18,6 +18,7 @@ import statistics
 import struct
 import sys
 import xml.etree.ElementTree as ElementTree
+from itertools import pairwise
 
 from fitshift import RECORD, TIMESTAMP, crc16, walk
 
@@ -117,7 +118,7 @@ def read_elevations(path):
 def measure(points):
     """Return cumulative distance along points, one entry per point."""
     cumulative = [0.0]
-    for first, second in zip(points, points[1:]):
+    for first, second in pairwise(points):
         cumulative.append(cumulative[-1] + haversine(first, second))
     return cumulative
 
@@ -224,8 +225,8 @@ def retime(times, distances, limit):
     """
     deltas = [
         (second - first, there - here)
-        for first, second, here, there in zip(
-            times, times[1:], distances, distances[1:]
+        for (first, second), (here, there) in zip(
+            pairwise(times), pairwise(distances), strict=True
         )
     ]
     speeds = [
@@ -301,7 +302,7 @@ def align(records, anchors, cumulative, elevations):
         return profile[index][1]
 
     added = []
-    for (ride1, _), (ride2, _) in zip(anchors, anchors[1:]):
+    for (ride1, _), (ride2, _) in pairwise(anchors):
         centre = ride1 + HILL_STEP
         while centre < ride2 - HILL_STEP:
             low = max(0.0, centre - HILL_WINDOW / 2)
@@ -470,7 +471,7 @@ def summarize(data):
         lats = [lat for lat, _ in inside]
         lons = [lon for _, lon in inside]
         values = (*inside[0], *inside[-1], max(lats), max(lons), min(lats), min(lons))
-        for number, value in zip(SUMMARY_FIELDS[summary['kind']], values):
+        for number, value in zip(SUMMARY_FIELDS[summary['kind']], values, strict=True):
             if number in summary['fields']:
                 pos, endian = summary['fields'][number]
                 struct.pack_into(endian + 'i', out, pos, value)
@@ -513,7 +514,7 @@ def match(
         rebuilt, jumps, dropped = retime(
             [r['stamp'] for r in paced], [r['distance'] for r in paced], limit
         )
-        for record, distance in zip(paced, rebuilt):
+        for record, distance in zip(paced, rebuilt, strict=True):
             record['distance'] = distance
         replaced = len(jumps)
     ridden = [r for r in records if r['distance'] is not None]
@@ -647,7 +648,7 @@ def rebuild(
             f'fit_tool decoded {len(decoded)} records, the file has {len(records)}'
         )
 
-    for message, record in zip(decoded, records):
+    for message, record in zip(decoded, records, strict=True):
         if record['distance'] is None:
             stats['skipped'] += 1
         elif record['trusted']:

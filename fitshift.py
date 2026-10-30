@@ -13,7 +13,7 @@ import struct
 import sys
 
 # FIT date_time is uint32 seconds since this instant, UTC.
-EPOCH = datetime.datetime(1989, 12, 31, tzinfo=datetime.timezone.utc)
+EPOCH = datetime.datetime(1989, 12, 31, tzinfo=datetime.UTC)
 
 UINT32 = 6
 
@@ -318,7 +318,7 @@ def main():
 
     seconds = args.by
     if seconds is None:
-        target = args.to.replace(tzinfo=datetime.timezone.utc)
+        target = args.to.replace(tzinfo=datetime.UTC)
         seconds = int((target - EPOCH).total_seconds()) - offset - start
 
     print(f'start  {render(start, offset)}')

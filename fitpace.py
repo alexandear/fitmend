@@ -18,6 +18,7 @@ import statistics
 import struct
 import sys
 import xml.etree.ElementTree as ElementTree
+from itertools import pairwise
 
 from fitroute import measure, read_route, retime
 from fitshift import RECORD, crc16, walk
@@ -122,15 +123,12 @@ def pace(data, keep, length):
         raise ValueError(f'the route is only {length:.0f} m long')
 
     slope, intercept = model(times, heart, speeds, split)
-    predicted = [
-        max(0.0, intercept + slope * heart[i]) for i in range(split + 1, len(records))
-    ]
-    steps = [times[i] - times[i - 1] for i in range(split + 1, len(records))]
-    modelled = sum(v * dt for v, dt in zip(predicted, steps))
+    predicted = [max(0.0, intercept + slope * rate) for rate in heart[split + 1 :]]
+    steps = [second - first for first, second in pairwise(times[split:])]
+    modelled = sum(v * dt for v, dt in zip(predicted, steps, strict=True))
     ratio = remaining / modelled
 
-    for offset, (v, dt) in enumerate(zip(predicted, steps)):
-        i = split + 1 + offset
+    for i, (v, dt) in enumerate(zip(predicted, steps, strict=True), start=split + 1):
         speeds[i] = v * ratio
         distances[i] = distances[i - 1] + speeds[i] * dt
     distances[-1] = length
@@ -222,7 +220,7 @@ def rewrite(data, messages, end, times, distances, speeds, records, split):
     """
     out = bytearray(data)
     for record, distance, speed in zip(
-        records[split + 1 :], distances[split + 1 :], speeds[split + 1 :]
+        records[split + 1 :], distances[split + 1 :], speeds[split + 1 :], strict=True
     ):
         put(out, record, DISTANCE, round(distance * 100))
         put(out, record, SPEED, round(speed * 1000))

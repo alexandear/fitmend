@@ -7,7 +7,8 @@ activity alone.
 
 [uv](https://docs.astral.sh/uv/) and nothing else. It reads `pyproject.toml`,
 creates `.venv` on the first `uv run` and keeps it in step with `uv.lock`;
-there is no install step.
+there is no install step. Python 3.15 is the floor, and uv fetches it itself
+if the machine has no Python that new.
 
 `fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only,
 so plain `uv run` is enough:
