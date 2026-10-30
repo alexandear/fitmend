@@ -14,8 +14,12 @@ import fitroute
 import fitshift
 
 # (base type byte, size, struct code) per field type a test may write.
-BASE = {'uint8': (0x02, 1, 'B'), 'uint16': (0x84, 2, 'H'),
-        'uint32': (0x86, 4, 'I'), 'sint32': (0x85, 4, 'i')}
+BASE = {
+    'uint8': (0x02, 1, 'B'),
+    'uint16': (0x84, 2, 'H'),
+    'uint32': (0x86, 4, 'I'),
+    'sint32': (0x85, 4, 'i'),
+}
 
 FILE_ID = 0
 SESSION = 18
@@ -64,22 +68,46 @@ def activity(records, extra=()):
     for stamp, fields in records:
         messages.append((fitshift.RECORD, [(253, 'uint32', stamp)] + fields))
     messages += [
-        (LAP, [(253, 'uint32', last), (2, 'uint32', first),
-               (7, 'uint32', (last - first) * 1000),
-               (8, 'uint32', (last - first) * 1000), (9, 'uint32', 0),
-               (3, 'sint32', SENTINEL), (4, 'sint32', SENTINEL),
-               (5, 'sint32', SENTINEL), (6, 'sint32', SENTINEL),
-               (27, 'sint32', SENTINEL), (28, 'sint32', SENTINEL),
-               (29, 'sint32', SENTINEL), (30, 'sint32', SENTINEL),
-               (13, 'uint16', 0), (14, 'uint16', 0)]),
-        (SESSION, [(253, 'uint32', last), (2, 'uint32', first),
-                   (7, 'uint32', (last - first) * 1000),
-                   (8, 'uint32', (last - first) * 1000), (9, 'uint32', 0),
-                   (3, 'sint32', SENTINEL), (4, 'sint32', SENTINEL),
-                   (38, 'sint32', SENTINEL), (39, 'sint32', SENTINEL),
-                   (29, 'sint32', SENTINEL), (30, 'sint32', SENTINEL),
-                   (31, 'sint32', SENTINEL), (32, 'sint32', SENTINEL),
-                   (14, 'uint16', 0), (15, 'uint16', 0)]),
+        (
+            LAP,
+            [
+                (253, 'uint32', last),
+                (2, 'uint32', first),
+                (7, 'uint32', (last - first) * 1000),
+                (8, 'uint32', (last - first) * 1000),
+                (9, 'uint32', 0),
+                (3, 'sint32', SENTINEL),
+                (4, 'sint32', SENTINEL),
+                (5, 'sint32', SENTINEL),
+                (6, 'sint32', SENTINEL),
+                (27, 'sint32', SENTINEL),
+                (28, 'sint32', SENTINEL),
+                (29, 'sint32', SENTINEL),
+                (30, 'sint32', SENTINEL),
+                (13, 'uint16', 0),
+                (14, 'uint16', 0),
+            ],
+        ),
+        (
+            SESSION,
+            [
+                (253, 'uint32', last),
+                (2, 'uint32', first),
+                (7, 'uint32', (last - first) * 1000),
+                (8, 'uint32', (last - first) * 1000),
+                (9, 'uint32', 0),
+                (3, 'sint32', SENTINEL),
+                (4, 'sint32', SENTINEL),
+                (38, 'sint32', SENTINEL),
+                (39, 'sint32', SENTINEL),
+                (29, 'sint32', SENTINEL),
+                (30, 'sint32', SENTINEL),
+                (31, 'sint32', SENTINEL),
+                (32, 'sint32', SENTINEL),
+                (14, 'uint16', 0),
+                (15, 'uint16', 0),
+            ],
+        ),
         (ACTIVITY, [(253, 'uint32', last), (5, 'uint32', last + ZONE)]),
     ]
     return encode(messages + list(extra))
@@ -87,8 +115,10 @@ def activity(records, extra=()):
 
 def route(path, points, elevations=None):
     """Write a GPX track of these (lat, lon) points and return the path."""
-    body = ['<?xml version="1.0"?>',
-            '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>']
+    body = [
+        '<?xml version="1.0"?>',
+        '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>',
+    ]
     for index, (lat, lon) in enumerate(points):
         body.append(f'<trkpt lat="{lat}" lon="{lon}">')
         if elevations is not None:
@@ -112,20 +142,17 @@ class Crc(unittest.TestCase):
         self.assertEqual(fitshift.crc16(b'\x00' * 8), 0)
 
     def test_a_single_bit_changes_it(self):
-        self.assertNotEqual(fitshift.crc16(b'fitmend'),
-                            fitshift.crc16(b'fitmene'))
+        self.assertNotEqual(fitshift.crc16(b'fitmend'), fitshift.crc16(b'fitmene'))
 
     def test_an_encoded_file_carries_its_own_crc(self):
         data = activity([(START, [(5, 'uint32', 0)])])
         end = len(data) - 2
-        self.assertEqual(struct.unpack('<H', data[end:])[0],
-                         fitshift.crc16(data[:end]))
+        self.assertEqual(struct.unpack('<H', data[end:])[0], fitshift.crc16(data[:end]))
 
 
 class Walk(unittest.TestCase):
     def setUp(self):
-        self.data = activity([(START + i, [(5, 'uint32', i * 100)])
-                              for i in range(3)])
+        self.data = activity([(START + i, [(5, 'uint32', i * 100)]) for i in range(3)])
 
     def test_it_ends_on_the_file_crc(self):
         end = fitshift.walk(self.data, lambda *args: None)
@@ -133,8 +160,10 @@ class Walk(unittest.TestCase):
 
     def test_it_visits_every_field_of_every_message(self):
         seen = []
-        fitshift.walk(self.data,
-                      lambda global_num, number, *rest: seen.append((global_num, number)))
+        fitshift.walk(
+            self.data,
+            lambda global_num, number, *rest: seen.append((global_num, number)),
+        )
         self.assertEqual(seen.count((fitshift.RECORD, 253)), 3)
         self.assertEqual(seen.count((fitshift.RECORD, 5)), 3)
         self.assertIn((FILE_ID, 4), seen)
@@ -176,34 +205,45 @@ class Survey(unittest.TestCase):
 
     def test_the_span_comes_from_the_records_alone(self):
         # A private message reusing field 253 for a counter is not the end.
-        data = activity([(START + i, [(5, 'uint32', 0)]) for i in range(3)],
-                        extra=[(PRIVATE, [(253, 'uint32', START + 99999)])])
+        data = activity(
+            [(START + i, [(5, 'uint32', 0)]) for i in range(3)],
+            extra=[(PRIVATE, [(253, 'uint32', START + 99999)])],
+        )
         _, last, _, _ = fitshift.survey(data)
         self.assertEqual(last, START + 2)
 
     def test_the_invalid_sentinel_is_not_a_timestamp(self):
         # With no records to go on, the summaries are the span; the sentinel
         # would otherwise be the end of the activity.
-        data = encode([(FILE_ID, [(0, 'uint8', 4), (4, 'uint32', START)]),
-                       (SESSION, [(253, 'uint32', START + 10),
-                                  (2, 'uint32', START)]),
-                       (PRIVATE, [(253, 'uint32', fitshift.INVALID)])])
+        data = encode(
+            [
+                (FILE_ID, [(0, 'uint8', 4), (4, 'uint32', START)]),
+                (SESSION, [(253, 'uint32', START + 10), (2, 'uint32', START)]),
+                (PRIVATE, [(253, 'uint32', fitshift.INVALID)]),
+            ]
+        )
         _, last, window, _ = fitshift.survey(data)
         self.assertEqual(last, START + 10)
         self.assertLess(window[1], fitshift.INVALID)
 
     def test_a_private_counter_does_not_stretch_the_window(self):
-        data = activity([(START + i, [(5, 'uint32', 0)]) for i in range(3)],
-                        extra=[(PRIVATE, [(253, 'uint32', 7)])])
+        data = activity(
+            [(START + i, [(5, 'uint32', 0)]) for i in range(3)],
+            extra=[(PRIVATE, [(253, 'uint32', 7)])],
+        )
         _, _, window, _ = fitshift.survey(data)
         self.assertEqual(window, (START, START + 2))
 
 
 class Shift(unittest.TestCase):
     def setUp(self):
-        self.data = activity([(START + i, [(5, 'uint32', 0)]) for i in range(3)],
-                             extra=[(PRIVATE, [(253, 'uint32', 7)]),
-                                    (PRIVATE, [(253, 'uint32', fitshift.INVALID)])])
+        self.data = activity(
+            [(START + i, [(5, 'uint32', 0)]) for i in range(3)],
+            extra=[
+                (PRIVATE, [(253, 'uint32', 7)]),
+                (PRIVATE, [(253, 'uint32', fitshift.INVALID)]),
+            ],
+        )
         _, _, self.window, _ = fitshift.survey(self.data)
 
     def stamps(self, data):
@@ -211,8 +251,9 @@ class Shift(unittest.TestCase):
 
         def visit(global_num, number, base_type, endian, pos, size, developer):
             if fitshift.is_date_time(global_num, number, base_type, size, developer):
-                found.append((global_num, number,
-                              struct.unpack_from(endian + 'I', data, pos)[0]))
+                found.append(
+                    (global_num, number, struct.unpack_from(endian + 'I', data, pos)[0])
+                )
 
         fitshift.walk(data, visit)
         return found
@@ -306,8 +347,9 @@ class Geometry(unittest.TestCase):
         cumulative = fitroute.measure(points)
         lat, lon = fitroute.locate(points, cumulative, 250)
         # A tenth of a degree of longitude is well off a north-south route.
-        off, along = fitroute.project(points, cumulative, (lat, lon + 0.001),
-                                      0, cumulative[-1])
+        off, along = fitroute.project(
+            points, cumulative, (lat, lon + 0.001), 0, cumulative[-1]
+        )
         self.assertAlmostEqual(along, 250, delta=1.0)
         self.assertAlmostEqual(off, 71.6, delta=1.0)
 
@@ -393,9 +435,11 @@ class ReadRoute(unittest.TestCase):
     def test_one_missing_ele_is_no_profile(self):
         path = self.path()
         with open(path, 'w') as out:
-            out.write('<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
-                      '<trkpt lat="50.0" lon="30.0"><ele>1.0</ele></trkpt>'
-                      '<trkpt lat="50.1" lon="30.0"/></trkseg></trk></gpx>')
+            out.write(
+                '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
+                '<trkpt lat="50.0" lon="30.0"><ele>1.0</ele></trkpt>'
+                '<trkpt lat="50.1" lon="30.0"/></trkseg></trk></gpx>'
+            )
         self.assertIsNone(fitroute.read_elevations(path))
 
 
@@ -411,10 +455,16 @@ class Graft(unittest.TestCase):
         records = []
         for index, fix in enumerate(fixes):
             lat, lon = fix if fix else (SENTINEL, SENTINEL)
-            records.append((START + index * 60,
-                            [(5, 'uint32', index * 100 * 100),
-                             (0, 'sint32', lat if fix is None else semicircles(lat)),
-                             (1, 'sint32', lon if fix is None else semicircles(lon))]))
+            records.append(
+                (
+                    START + index * 60,
+                    [
+                        (5, 'uint32', index * 100 * 100),
+                        (0, 'sint32', lat if fix is None else semicircles(lat)),
+                        (1, 'sint32', lon if fix is None else semicircles(lon)),
+                    ],
+                )
+            )
         return activity(records)
 
     def test_the_sentinel_is_replaced_along_the_route(self):
@@ -430,8 +480,9 @@ class Graft(unittest.TestCase):
         out, _ = fitroute.graft(data, self.points)
         before, _ = fitroute.read_records(data)
         after, _ = fitroute.read_records(out)
-        self.assertEqual([r['distance'] for r in before],
-                         [r['distance'] for r in after])
+        self.assertEqual(
+            [r['distance'] for r in before], [r['distance'] for r in after]
+        )
         self.assertEqual([r['stamp'] for r in before], [r['stamp'] for r in after])
         self.assertEqual(len(data), len(out))
 
@@ -452,8 +503,7 @@ class Graft(unittest.TestCase):
         # 200 m east of the route: too far to be on it, too near to be spoofed.
         lat, lon = self.points[2]
         fixes = [None, None, (lat, lon + 0.0028), None, None]
-        out, stats = fitroute.graft(self.ride(fixes), self.points,
-                                    broken_only=True)
+        out, stats = fitroute.graft(self.ride(fixes), self.points, broken_only=True)
         self.assertEqual(stats['off_route'], 1)
         self.assertEqual(stats['placed'], 4)
 
@@ -470,10 +520,17 @@ class Graft(unittest.TestCase):
         self.assertAlmostEqual(records[-1]['fix'][0], north(9, 100)[4][0], places=5)
 
     def test_max_speed_rebuilds_the_axis_the_match_runs_on(self):
-        records = [(START + index, [(5, 'uint32', distance * 100),
-                                    (0, 'sint32', SENTINEL),
-                                    (1, 'sint32', SENTINEL)])
-                   for index, distance in enumerate([0, 3, 6, 1009, 1012])]
+        records = [
+            (
+                START + index,
+                [
+                    (5, 'uint32', distance * 100),
+                    (0, 'sint32', SENTINEL),
+                    (1, 'sint32', SENTINEL),
+                ],
+            )
+            for index, distance in enumerate([0, 3, 6, 1009, 1012])
+        ]
         data = activity(records)
         _, stats = fitroute.graft(data, self.points, limit=5.0)
         self.assertEqual(stats['replaced'], 1)
@@ -486,8 +543,9 @@ class Graft(unittest.TestCase):
 
         def visit(global_num, number, base_type, endian, pos, size, developer):
             if global_num in (SESSION, LAP) and size == 4 and base_type == 0x85:
-                found[(global_num, number)] = struct.unpack_from(endian + 'i',
-                                                                 out, pos)[0]
+                found[(global_num, number)] = struct.unpack_from(
+                    endian + 'i', out, pos
+                )[0]
 
         fitshift.walk(out, visit)
         self.assertEqual(found[(SESSION, 3)], semicircles(self.points[0][0]))
@@ -498,8 +556,9 @@ class Graft(unittest.TestCase):
         self.assertEqual(found[(LAP, 30)], semicircles(30.0))
 
     def test_a_record_with_no_position_field_is_skipped(self):
-        records = [(START + index, [(5, 'uint32', index * 100 * 100)])
-                   for index in range(5)]
+        records = [
+            (START + index, [(5, 'uint32', index * 100 * 100)]) for index in range(5)
+        ]
         _, stats = fitroute.graft(activity(records), self.points)
         self.assertEqual((stats['placed'], stats['skipped']), (0, 5))
 
@@ -513,11 +572,17 @@ class Unjam(unittest.TestCase):
     """The distance stream itself, rebuilt from the pace that is a pace."""
 
     def ride(self, distances, speed=3.0):
-        records = [(START + index,
-                    [(5, 'uint32', round(distance * 100)),
-                     (73, 'uint32', round(speed * 1000)),
-                     (3, 'uint8', 140)])
-                   for index, distance in enumerate(distances)]
+        records = [
+            (
+                START + index,
+                [
+                    (5, 'uint32', round(distance * 100)),
+                    (73, 'uint32', round(speed * 1000)),
+                    (3, 'uint8', 140),
+                ],
+            )
+            for index, distance in enumerate(distances)
+        ]
         return activity(records)
 
     def test_the_jump_goes_and_the_run_lands_on_the_route(self):
@@ -527,8 +592,9 @@ class Unjam(unittest.TestCase):
         self.assertAlmostEqual(stats['dropped'], 97.0)
         self.assertAlmostEqual(stats['ratio'], 1.0)
         records, _ = fitroute.read_records(out)
-        self.assertEqual([r['distance'] for r in records],
-                         [0, 3, 6, 9, 12, 15, 18, 21, 24, 27])
+        self.assertEqual(
+            [r['distance'] for r in records], [0, 3, 6, 9, 12, 15, 18, 21, 24, 27]
+        )
 
     def test_the_recorded_distance_stands_before_the_first_jump(self):
         data = self.ride([0, 3, 6, 9, 109, 112, 115])
@@ -542,8 +608,11 @@ class Unjam(unittest.TestCase):
         data = self.ride([0, 3, 6, 9, 109, 112, 115])
         out, _ = fitpace.unjam(data, 5.0, 100.0)
         messages, _ = fitpace.read_messages(out)
-        speeds = [fields[73][0] / 1000.0 for number, fields in messages
-                  if number == fitshift.RECORD]
+        speeds = [
+            fields[73][0] / 1000.0
+            for number, fields in messages
+            if number == fitshift.RECORD
+        ]
         self.assertEqual(speeds[:4], [3.0, 3.0, 3.0, 3.0])
         self.assertGreater(speeds[-1], 3.0)  # the rest was stretched
 
@@ -551,8 +620,11 @@ class Unjam(unittest.TestCase):
         data = self.ride([0, 3, 6, 9, 109, 112, 115])
         out, _ = fitpace.unjam(data, 5.0, 100.0)
         messages, _ = fitpace.read_messages(out)
-        totals = [fields[9][0] / 100.0 for number, fields in messages
-                  if number in (SESSION, LAP)]
+        totals = [
+            fields[9][0] / 100.0
+            for number, fields in messages
+            if number in (SESSION, LAP)
+        ]
         self.assertEqual(totals, [100.0, 100.0])
 
     def test_a_run_with_no_jump_is_not_this_tool_s_job(self):
@@ -579,10 +651,16 @@ class Pace(unittest.TestCase):
             heart = 120 + index // 10
             speed = 0.02 * heart
             distance += speed
-            records.append((START + index,
-                            [(5, 'uint32', round(distance * 100)),
-                             (73, 'uint32', round(speed * 1000)),
-                             (3, 'uint8', heart)]))
+            records.append(
+                (
+                    START + index,
+                    [
+                        (5, 'uint32', round(distance * 100)),
+                        (73, 'uint32', round(speed * 1000)),
+                        (3, 'uint8', heart),
+                    ],
+                )
+            )
         return activity(records)
 
     def test_the_paced_run_lands_on_the_route(self):
@@ -598,16 +676,24 @@ class Pace(unittest.TestCase):
         after, _ = fitroute.read_records(out)
         split = stats['split']
         self.assertGreater(split, 0)
-        self.assertEqual([r['distance'] for r in before[:split + 1]],
-                         [r['distance'] for r in after[:split + 1]])
+        self.assertEqual(
+            [r['distance'] for r in before[: split + 1]],
+            [r['distance'] for r in after[: split + 1]],
+        )
 
     def test_a_pace_that_ignores_heart_rate_has_no_model(self):
         records = []
         for index in range(300):
-            records.append((START + index,
-                            [(5, 'uint32', index * 300),
-                             (73, 'uint32', 3000),
-                             (3, 'uint8', 120 + index % 40)]))
+            records.append(
+                (
+                    START + index,
+                    [
+                        (5, 'uint32', index * 300),
+                        (73, 'uint32', 3000),
+                        (3, 'uint8', 120 + index % 40),
+                    ],
+                )
+            )
         with self.assertRaisesRegex(ValueError, 'heart rate'):
             fitpace.pace(activity(records), 500.0, 1200.0)
 

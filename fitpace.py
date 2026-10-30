@@ -62,7 +62,7 @@ def read_messages(data):
         if developer or size not in (1, 2, 4):
             return
         code = {1: 'B', 2: 'H', 4: 'I'}[size]
-        value = struct.unpack(endian + code, data[pos:pos + size])[0]
+        value = struct.unpack(endian + code, data[pos : pos + size])[0]
         messages[-1][1][number] = (value, pos, size, endian)
 
     end = walk(data, visit, start)
@@ -70,8 +70,10 @@ def read_messages(data):
 
 
 def smooth(values, window):
-    return [statistics.fmean(values[max(0, i - window):i + window + 1])
-            for i in range(len(values))]
+    return [
+        statistics.fmean(values[max(0, i - window) : i + window + 1])
+        for i in range(len(values))
+    ]
 
 
 def model(times, heart, speeds, keep):
@@ -79,8 +81,9 @@ def model(times, heart, speeds, keep):
     first = next((i for i, t in enumerate(times) if t - times[0] >= WARMUP), 0)
     if keep - first < 2:
         raise ValueError('too little of the run before --keep to learn from')
-    slope, intercept = statistics.linear_regression(heart[first:keep],
-                                                    speeds[first:keep])
+    slope, intercept = statistics.linear_regression(
+        heart[first:keep], speeds[first:keep]
+    )
     if slope <= 0:
         raise ValueError('pace does not follow heart rate in the kept part')
     return slope, intercept
@@ -93,15 +96,22 @@ def pace(data, keep, length):
     sets the scale, so the last record lands exactly on length.
     """
     messages, end = read_messages(data)
-    records = [fields for number, fields in messages if number == RECORD
-               and {TIMESTAMP, HEART_RATE, DISTANCE} <= fields.keys()]
+    records = [
+        fields
+        for number, fields in messages
+        if number == RECORD and {TIMESTAMP, HEART_RATE, DISTANCE} <= fields.keys()
+    ]
     if not records:
         raise ValueError('no records with timestamp, heart rate and distance')
 
     times = [r[TIMESTAMP][0] for r in records]
     distances = [r[DISTANCE][0] / 100.0 for r in records]
-    speeds = [r[ENHANCED_SPEED][0] / 1000.0 if ENHANCED_SPEED in r
-              else r.get(SPEED, (0,))[0] / 1000.0 for r in records]
+    speeds = [
+        r[ENHANCED_SPEED][0] / 1000.0
+        if ENHANCED_SPEED in r
+        else r.get(SPEED, (0,))[0] / 1000.0
+        for r in records
+    ]
     heart = smooth([r[HEART_RATE][0] for r in records], SMOOTHING)
 
     split = next((i for i, d in enumerate(distances) if d >= keep), None)
@@ -112,8 +122,9 @@ def pace(data, keep, length):
         raise ValueError(f'the route is only {length:.0f} m long')
 
     slope, intercept = model(times, heart, speeds, split)
-    predicted = [max(0.0, intercept + slope * heart[i])
-                 for i in range(split + 1, len(records))]
+    predicted = [
+        max(0.0, intercept + slope * heart[i]) for i in range(split + 1, len(records))
+    ]
     steps = [times[i] - times[i - 1] for i in range(split + 1, len(records))]
     modelled = sum(v * dt for v, dt in zip(predicted, steps))
     ratio = remaining / modelled
@@ -124,14 +135,19 @@ def pace(data, keep, length):
         distances[i] = distances[i - 1] + speeds[i] * dt
     distances[-1] = length
 
-    out = rewrite(data, messages, end, times, distances, speeds,
-                  records, split)
-    stats = {'records': len(records), 'split': split,
-             'kept_time': times[split] - times[0],
-             'kept_distance': distances[split], 'length': length,
-             'modelled': modelled, 'ratio': ratio, 'slope': slope,
-             'intercept': intercept,
-             'pace': (times[-1] - times[split]) / remaining * 1000}
+    out = rewrite(data, messages, end, times, distances, speeds, records, split)
+    stats = {
+        'records': len(records),
+        'split': split,
+        'kept_time': times[split] - times[0],
+        'kept_distance': distances[split],
+        'length': length,
+        'modelled': modelled,
+        'ratio': ratio,
+        'slope': slope,
+        'intercept': intercept,
+        'pace': (times[-1] - times[split]) / remaining * 1000,
+    }
     return out, stats
 
 
@@ -145,15 +161,22 @@ def unjam(data, limit, length):
     so the run finishes on the route's length.
     """
     messages, end = read_messages(data)
-    records = [fields for number, fields in messages if number == RECORD
-               and {TIMESTAMP, DISTANCE} <= fields.keys()]
+    records = [
+        fields
+        for number, fields in messages
+        if number == RECORD and {TIMESTAMP, DISTANCE} <= fields.keys()
+    ]
     if not records:
         raise ValueError('no records with a timestamp and distance')
 
     times = [r[TIMESTAMP][0] for r in records]
     recorded = [r[DISTANCE][0] / 100.0 for r in records]
-    speeds = [r[ENHANCED_SPEED][0] / 1000.0 if ENHANCED_SPEED in r
-              else r.get(SPEED, (0,))[0] / 1000.0 for r in records]
+    speeds = [
+        r[ENHANCED_SPEED][0] / 1000.0
+        if ENHANCED_SPEED in r
+        else r.get(SPEED, (0,))[0] / 1000.0
+        for r in records
+    ]
 
     rebuilt, jumps, dropped = retime(times, recorded, limit)
     if not jumps:
@@ -165,22 +188,30 @@ def unjam(data, limit, length):
         raise ValueError(f'the route is only {length:.0f} m long')
     ratio = remaining / (rebuilt[-1] - rebuilt[split])
 
-    distances = [distance if index <= split
-                 else rebuilt[split] + (distance - rebuilt[split]) * ratio
-                 for index, distance in enumerate(rebuilt)]
+    distances = [
+        distance
+        if index <= split
+        else rebuilt[split] + (distance - rebuilt[split]) * ratio
+        for index, distance in enumerate(rebuilt)
+    ]
     distances[-1] = length
     for i in range(split + 1, len(records)):
         step = times[i] - times[i - 1]
         speeds[i] = (distances[i] - distances[i - 1]) / step if step > 0 else 0.0
 
-    out = rewrite(data, messages, end, times, distances, speeds,
-                  records, split)
-    stats = {'records': len(records), 'split': split,
-             'kept_time': times[split] - times[0],
-             'kept_distance': distances[split], 'length': length,
-             'jumps': len(jumps), 'dropped': dropped, 'ratio': ratio,
-             'rebuilt': rebuilt[-1] - rebuilt[split],
-             'pace': (times[-1] - times[split]) / remaining * 1000}
+    out = rewrite(data, messages, end, times, distances, speeds, records, split)
+    stats = {
+        'records': len(records),
+        'split': split,
+        'kept_time': times[split] - times[0],
+        'kept_distance': distances[split],
+        'length': length,
+        'jumps': len(jumps),
+        'dropped': dropped,
+        'ratio': ratio,
+        'rebuilt': rebuilt[-1] - rebuilt[split],
+        'pace': (times[-1] - times[split]) / remaining * 1000,
+    }
     return out, stats
 
 
@@ -190,9 +221,9 @@ def rewrite(data, messages, end, times, distances, speeds, records, split):
     The lap and session totals that are read from them move with them.
     """
     out = bytearray(data)
-    for record, distance, speed in zip(records[split + 1:],
-                                       distances[split + 1:],
-                                       speeds[split + 1:]):
+    for record, distance, speed in zip(
+        records[split + 1 :], distances[split + 1 :], speeds[split + 1 :]
+    ):
         put(out, record, DISTANCE, round(distance * 100))
         put(out, record, SPEED, round(speed * 1000))
         put(out, record, ENHANCED_SPEED, round(speed * 1000))
@@ -242,16 +273,30 @@ def main():
     parser.add_argument('route', help='GPX file whose length the run covered')
     parser.add_argument('-o', '--out', help='output FIT file')
     how = parser.add_mutually_exclusive_group(required=True)
-    how.add_argument('--keep', type=float, metavar='KM',
-                     help='the recorded pace is right up to this many km, '
-                          'and heart rate paces the rest')
-    how.add_argument('--max-speed', type=float, metavar='KMH',
-                     help='the recorded pace is right wherever it is slower '
-                          'than this, and its median replaces the jumps')
-    parser.add_argument('--laps', type=int, default=1, metavar='N',
-                        help='the run went round a looped route N times')
-    parser.add_argument('-n', '--dry-run', action='store_true',
-                        help='report the model without writing')
+    how.add_argument(
+        '--keep',
+        type=float,
+        metavar='KM',
+        help='the recorded pace is right up to this many km, '
+        'and heart rate paces the rest',
+    )
+    how.add_argument(
+        '--max-speed',
+        type=float,
+        metavar='KMH',
+        help='the recorded pace is right wherever it is slower '
+        'than this, and its median replaces the jumps',
+    )
+    parser.add_argument(
+        '--laps',
+        type=int,
+        default=1,
+        metavar='N',
+        help='the run went round a looped route N times',
+    )
+    parser.add_argument(
+        '-n', '--dry-run', action='store_true', help='report the model without writing'
+    )
     args = parser.parse_args()
 
     if not args.out and not args.dry_run:
@@ -266,39 +311,59 @@ def main():
         # repeated is the route the run actually covered.
         length = measure(read_route(args.route) * args.laps)[-1]
         data = open(args.base, 'rb').read()
-        patched, stats = (pace(data, args.keep * 1000, length)
-                          if args.keep is not None
-                          else unjam(data, args.max_speed / 3.6, length))
-    except (ValueError, IndexError, KeyError, struct.error,
-            statistics.StatisticsError, ElementTree.ParseError) as err:
+        patched, stats = (
+            pace(data, args.keep * 1000, length)
+            if args.keep is not None
+            else unjam(data, args.max_speed / 3.6, length)
+        )
+    except (
+        ValueError,
+        IndexError,
+        KeyError,
+        struct.error,
+        statistics.StatisticsError,
+        ElementTree.ParseError,
+    ) as err:
         print(f'cannot pace: {err}', file=sys.stderr)
         return 1
 
     kept_pace = stats['kept_time'] / stats['kept_distance'] * 1000
-    laps = f", {args.laps} laps" if args.laps > 1 else ''
-    print(f"route     {stats['length'] / 1000:.3f} km{laps}")
-    print(f"kept      {stats['kept_distance'] / 1000:.3f} km in "
-          f"{stats['kept_time'] // 60}:{stats['kept_time'] % 60:02d}, "
-          f"{minutes(kept_pace)}")
+    laps = f', {args.laps} laps' if args.laps > 1 else ''
+    print(f'route     {stats["length"] / 1000:.3f} km{laps}')
+    print(
+        f'kept      {stats["kept_distance"] / 1000:.3f} km in '
+        f'{stats["kept_time"] // 60}:{stats["kept_time"] % 60:02d}, '
+        f'{minutes(kept_pace)}'
+    )
     rest = (stats['length'] - stats['kept_distance']) / 1000
     if args.keep is not None:
-        print(f"model     speed = {stats['intercept']:.3f} + "
-              f"{stats['slope']:.4f} * hr m/s")
-        print(f"modelled  {stats['modelled'] / 1000:.3f} km by heart rate, "
-              f"scaled {stats['ratio']:.5f} to {rest:.3f} km")
+        print(
+            f'model     speed = {stats["intercept"]:.3f} + '
+            f'{stats["slope"]:.4f} * hr m/s'
+        )
+        print(
+            f'modelled  {stats["modelled"] / 1000:.3f} km by heart rate, '
+            f'scaled {stats["ratio"]:.5f} to {rest:.3f} km'
+        )
     else:
-        print(f"dropped   {stats['dropped'] / 1000:.3f} km of inflated "
-              f"distance from {stats['jumps']} records")
-        print(f"rebuilt   {stats['rebuilt'] / 1000:.3f} km from the pace that "
-              f"was left, scaled {stats['ratio']:.5f} to {rest:.3f} km")
-    print(f"paced     {stats['records'] - stats['split'] - 1} records at "
-          f"{minutes(stats['pace'])} on average")
+        print(
+            f'dropped   {stats["dropped"] / 1000:.3f} km of inflated '
+            f'distance from {stats["jumps"]} records'
+        )
+        print(
+            f'rebuilt   {stats["rebuilt"] / 1000:.3f} km from the pace that '
+            f'was left, scaled {stats["ratio"]:.5f} to {rest:.3f} km'
+        )
+    print(
+        f'paced     {stats["records"] - stats["split"] - 1} records at '
+        f'{minutes(stats["pace"])} on average'
+    )
 
     if args.dry_run:
         return 0
 
     open(args.out, 'wb').write(patched)
-    print(f"wrote     {args.out}")
+    print(f'wrote     {args.out}')
     return 0
 
 

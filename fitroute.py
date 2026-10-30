@@ -24,7 +24,7 @@ from fitshift import RECORD, TIMESTAMP, crc16, walk
 EARTH_RADIUS = 6371000.0
 
 # FIT stores latitude and longitude as semicircles: degrees * 2^31 / 180.
-SEMICIRCLES = 2 ** 31 / 180.0
+SEMICIRCLES = 2**31 / 180.0
 
 POSITION_LAT = 0
 POSITION_LONG = 1
@@ -66,8 +66,10 @@ START_TIME = 2
 
 # Where each summary keeps its positions: start lat/long, end lat/long, and
 # the north-east and south-west corners of its bounding box.
-SUMMARY_FIELDS = {SESSION: (3, 4, 38, 39, 29, 30, 31, 32),
-                  LAP: (3, 4, 5, 6, 27, 28, 29, 30)}
+SUMMARY_FIELDS = {
+    SESSION: (3, 4, 38, 39, 29, 30, 31, 32),
+    LAP: (3, 4, 5, 6, 27, 28, 29, 30),
+}
 
 
 def haversine(first, second):
@@ -76,8 +78,10 @@ def haversine(first, second):
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = phi2 - phi1
     dlambda = math.radians(lon2 - lon1)
-    a = (math.sin(dphi / 2) ** 2
-         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
     return 2 * EARTH_RADIUS * math.asin(math.sqrt(a))
 
 
@@ -100,8 +104,10 @@ def read_elevations(path):
     for element in ElementTree.parse(path).iter():
         if element.tag.rpartition('}')[2] != 'trkpt':
             continue
-        ele = next((child.text for child in element
-                    if child.tag.rpartition('}')[2] == 'ele'), None)
+        ele = next(
+            (child.text for child in element if child.tag.rpartition('}')[2] == 'ele'),
+            None,
+        )
         if ele is None:
             return None
         elevations.append(float(ele))
@@ -145,7 +151,9 @@ def project(points, cumulative, fix, low, high):
         ax, ay = (lon1 - lon0) * x_scale, (lat1 - lat0) * y_scale
         dx, dy = (lon2 - lon1) * x_scale, (lat2 - lat1) * y_scale
         length = dx * dx + dy * dy
-        fraction = 0.0 if length == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length))
+        fraction = (
+            0.0 if length == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length))
+        )
         off = math.hypot(ax + fraction * dx, ay + fraction * dy)
         if off < best[0]:
             span = cumulative[index + 1] - cumulative[index]
@@ -169,15 +177,20 @@ def anchor(records, points, cumulative, ratio=1.0):
         # search is still where the rider is: on a loop the finish passes the
         # start, and a window left at the start would trust it there.
         expected = along + (record['distance'] - ridden) * ratio
-        off, along_fix = project(points, cumulative, record['fix'],
-                                 expected - SEARCH_BACK,
-                                 expected + SEARCH_AHEAD)
+        off, along_fix = project(
+            points,
+            cumulative,
+            record['fix'],
+            expected - SEARCH_BACK,
+            expected + SEARCH_AHEAD,
+        )
         if off > ON_ROUTE:
             continue
         record['trusted'] = True
         along, ridden = along_fix, record['distance']
-        if not anchors or (record['distance'] > anchors[-1][0]
-                           and along > anchors[-1][1]):
+        if not anchors or (
+            record['distance'] > anchors[-1][0] and along > anchors[-1][1]
+        ):
             anchors.append((record['distance'], along))
     return anchors
 
@@ -209,14 +222,19 @@ def retime(times, distances, limit):
     the deltas that were, held over the same seconds. jumps are the indices
     whose delta was replaced, dropped the inflation they carried.
     """
-    deltas = [(second - first, there - here)
-              for first, second, here, there
-              in zip(times, times[1:], distances, distances[1:])]
-    speeds = [metres / seconds for seconds, metres in deltas
-              if seconds > 0 and 0 <= metres <= limit * seconds]
+    deltas = [
+        (second - first, there - here)
+        for first, second, here, there in zip(
+            times, times[1:], distances, distances[1:]
+        )
+    ]
+    speeds = [
+        metres / seconds
+        for seconds, metres in deltas
+        if seconds > 0 and 0 <= metres <= limit * seconds
+    ]
     if not speeds:
-        raise ValueError(f'no delta under {limit:.2f} m/s to rebuild the '
-                         'distance from')
+        raise ValueError(f'no delta under {limit:.2f} m/s to rebuild the distance from')
     median = statistics.median(speeds)
 
     rebuilt = [distances[0]]
@@ -267,8 +285,11 @@ def align(records, anchors, cumulative, elevations):
     Only the shape is compared, so the altimeter's absolute offset is moot,
     and a flat window has nothing to go on and adds no anchor.
     """
-    profile = [(r['distance'], r['altitude']) for r in records
-               if r['distance'] is not None and r['altitude'] is not None]
+    profile = [
+        (r['distance'], r['altitude'])
+        for r in records
+        if r['distance'] is not None and r['altitude'] is not None
+    ]
     if not profile:
         return anchors
     distances = [distance for distance, _ in profile]
@@ -283,8 +304,12 @@ def align(records, anchors, cumulative, elevations):
         centre = ride1 + HILL_STEP
         while centre < ride2 - HILL_STEP:
             low = max(0.0, centre - HILL_WINDOW / 2)
-            samples = [low + step * HILL_SAMPLE for step in
-                       range(int(min(HILL_WINDOW, distances[-1] - low) // HILL_SAMPLE))]
+            samples = [
+                low + step * HILL_SAMPLE
+                for step in range(
+                    int(min(HILL_WINDOW, distances[-1] - low) // HILL_SAMPLE)
+                )
+            ]
             ride = [altitude(distance) for distance in samples]
             centre += HILL_STEP
             if len(samples) < 2 or max(ride) - min(ride) < HILL_RELIEF:
@@ -292,9 +317,12 @@ def align(records, anchors, cumulative, elevations):
             placed = [interpolate(anchors, distance) for distance in samples]
             best = (-1.0, 0)
             for lag in range(-HILL_LAG, HILL_LAG + 1, HILL_SAMPLE):
-                route = [height(cumulative, elevations,
-                                min(max(at + lag, 0.0), route_length))
-                         for at in placed]
+                route = [
+                    height(
+                        cumulative, elevations, min(max(at + lag, 0.0), route_length)
+                    )
+                    for at in placed
+                ]
                 try:
                     best = max(best, (statistics.correlation(ride, route), lag))
                 except statistics.StatisticsError:
@@ -325,9 +353,18 @@ def read_records(data):
     def start(global_num):
         if global_num != RECORD:
             return
-        records.append({'stamp': None, 'distance': None, 'altitude': None,
-                        'lat': None, 'lon': None, 'fix': None,
-                        'trusted': False, 'endian': '<'})
+        records.append(
+            {
+                'stamp': None,
+                'distance': None,
+                'altitude': None,
+                'lat': None,
+                'lon': None,
+                'fix': None,
+                'trusted': False,
+                'endian': '<',
+            }
+        )
 
     def visit(global_num, number, base_type, endian, pos, size, developer):
         if global_num != RECORD or developer or not records:
@@ -335,20 +372,24 @@ def read_records(data):
         current = records[-1]
         current['endian'] = endian
         if number == TIMESTAMP and size == 4 and base_type & 0x1F == UINT32:
-            current['stamp'] = struct.unpack(endian + 'I',
-                                             data[pos:pos + 4])[0]
+            current['stamp'] = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
         elif number == DISTANCE and size == 4 and base_type & 0x1F == UINT32:
             # record.distance is scaled by 100, so the stored unit is a cm.
-            current['distance'] = struct.unpack(endian + 'I',
-                                                data[pos:pos + 4])[0] / 100.0
+            current['distance'] = (
+                struct.unpack(endian + 'I', data[pos : pos + 4])[0] / 100.0
+            )
         elif number == ENHANCED_ALTITUDE and size == 4 and base_type & 0x1F == UINT32:
-            raw = struct.unpack(endian + 'I', data[pos:pos + 4])[0]
+            raw = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
             if raw != 0xFFFFFFFF:
                 # Altitude is scaled by 5 and offset by 500 m.
                 current['altitude'] = raw / 5 - 500
-        elif (number == ALTITUDE and size == 2 and base_type & 0x1F == UINT16
-              and current['altitude'] is None):
-            raw = struct.unpack(endian + 'H', data[pos:pos + 2])[0]
+        elif (
+            number == ALTITUDE
+            and size == 2
+            and base_type & 0x1F == UINT16
+            and current['altitude'] is None
+        ):
+            raw = struct.unpack(endian + 'H', data[pos : pos + 2])[0]
             if raw != 0xFFFF:
                 current['altitude'] = raw / 5 - 500
         elif number == POSITION_LAT and size == 4 and base_type & 0x1F == SINT32:
@@ -388,8 +429,9 @@ def summarize(data):
             return
         if global_num == RECORD:
             if number == TIMESTAMP:
-                fixes.append([struct.unpack_from(endian + 'I', data, pos)[0],
-                              None, None])
+                fixes.append(
+                    [struct.unpack_from(endian + 'I', data, pos)[0], None, None]
+                )
             elif number in (POSITION_LAT, POSITION_LONG) and fixes:
                 value = struct.unpack_from(endian + 'i', data, pos)[0]
                 if abs(value) != INVALID:
@@ -404,10 +446,14 @@ def summarize(data):
             current['fields'][number] = (pos, endian)
 
     end = walk(data, visit, start)
-    fixes = [(stamp, lat, lon) for stamp, lat, lon in fixes
-             if lat is not None and lon is not None]
-    laps = sorted(s['start'] for s in summaries
-                  if s['kind'] == LAP and s['start'] is not None)
+    fixes = [
+        (stamp, lat, lon)
+        for stamp, lat, lon in fixes
+        if lat is not None and lon is not None
+    ]
+    laps = sorted(
+        s['start'] for s in summaries if s['kind'] == LAP and s['start'] is not None
+    )
 
     out = bytearray(data)
     for summary in summaries:
@@ -422,8 +468,7 @@ def summarize(data):
             continue
         lats = [lat for lat, _ in inside]
         lons = [lon for _, lon in inside]
-        values = (*inside[0], *inside[-1], max(lats), max(lons),
-                  min(lats), min(lons))
+        values = (*inside[0], *inside[-1], max(lats), max(lons), min(lats), min(lons))
         for number, value in zip(SUMMARY_FIELDS[summary['kind']], values):
             if number in summary['fields']:
                 pos, endian = summary['fields'][number]
@@ -434,8 +479,15 @@ def summarize(data):
     return bytes(out)
 
 
-def match(data, points, scale=True, gaps_only=False, elevations=None,
-          broken_only=False, limit=None):
+def match(
+    data,
+    points,
+    scale=True,
+    gaps_only=False,
+    elevations=None,
+    broken_only=False,
+    limit=None,
+):
     """Return (records, anchors, cumulative, stats) for placing the ride.
 
     gaps_only marks every fix that lies on the route as trusted and anchors
@@ -454,10 +506,12 @@ def match(data, points, scale=True, gaps_only=False, elevations=None,
     if limit:
         # Only the axis the placement runs on changes; the distance recorded
         # in the file is left alone, which is fitpace.py's to rewrite.
-        paced = [r for r in records
-                 if r['distance'] is not None and r['stamp'] is not None]
-        rebuilt, jumps, dropped = retime([r['stamp'] for r in paced],
-                                         [r['distance'] for r in paced], limit)
+        paced = [
+            r for r in records if r['distance'] is not None and r['stamp'] is not None
+        ]
+        rebuilt, jumps, dropped = retime(
+            [r['stamp'] for r in paced], [r['distance'] for r in paced], limit
+        )
         for record, distance in zip(paced, rebuilt):
             record['distance'] = distance
         replaced = len(jumps)
@@ -475,12 +529,16 @@ def match(data, points, scale=True, gaps_only=False, elevations=None,
 
     # Without trusted fixes this is plain scaling: start on start, finish on
     # finish, or with no scale the raw distance.
-    anchors = (anchor(records, points, cumulative, ratio)
-               if gaps_only or broken_only else [])
+    anchors = (
+        anchor(records, points, cumulative, ratio) if gaps_only or broken_only else []
+    )
     trusted = len(anchors)
     if scale:
-        inside = [(ride, route) for ride, route in anchors
-                  if 0 < ride < ride_length and 0 < route < route_length]
+        inside = [
+            (ride, route)
+            for ride, route in anchors
+            if 0 < ride < ride_length and 0 < route < route_length
+        ]
         anchors = [(0.0, 0.0)] + inside + [(ride_length, route_length)]
     elif not anchors:
         anchors = [(0.0, 0.0)]
@@ -491,24 +549,40 @@ def match(data, points, scale=True, gaps_only=False, elevations=None,
 
     off_route = keep_real(records, points, cumulative) if broken_only else 0
 
-    stats = {'records': len(records), 'placed': 0, 'skipped': 0, 'kept': 0,
-             'anchors': trusted, 'hills': len(anchors) - before,
-             'off_route': off_route,
-             'replaced': replaced, 'dropped': dropped,
-             'route_length': route_length, 'ride_length': ride_length,
-             'ratio': ratio}
+    stats = {
+        'records': len(records),
+        'placed': 0,
+        'skipped': 0,
+        'kept': 0,
+        'anchors': trusted,
+        'hills': len(anchors) - before,
+        'off_route': off_route,
+        'replaced': replaced,
+        'dropped': dropped,
+        'route_length': route_length,
+        'ride_length': ride_length,
+        'ratio': ratio,
+    }
     return records, anchors, cumulative, stats
 
 
-def graft(data, points, scale=True, reverse=False, gaps_only=False,
-          elevations=None, broken_only=False, limit=None):
+def graft(
+    data,
+    points,
+    scale=True,
+    reverse=False,
+    gaps_only=False,
+    elevations=None,
+    broken_only=False,
+    limit=None,
+):
     """Return a copy of data with record positions taken from the route."""
     if reverse:
         points = points[::-1]
         elevations = elevations and elevations[::-1]
-    records, anchors, cumulative, stats = match(data, points, scale,
-                                                gaps_only, elevations,
-                                                broken_only, limit)
+    records, anchors, cumulative, stats = match(
+        data, points, scale, gaps_only, elevations, broken_only, limit
+    )
 
     out = bytearray(data)
     for record in records:
@@ -518,20 +592,25 @@ def graft(data, points, scale=True, reverse=False, gaps_only=False,
         if record['trusted']:
             stats['kept'] += 1
             continue
-        lat, lon = locate(points, cumulative,
-                          interpolate(anchors, record['distance']))
+        lat, lon = locate(points, cumulative, interpolate(anchors, record['distance']))
         endian = record['endian']
-        struct.pack_into(endian + 'i', out, record['lat'],
-                         round(lat * SEMICIRCLES))
-        struct.pack_into(endian + 'i', out, record['lon'],
-                         round(lon * SEMICIRCLES))
+        struct.pack_into(endian + 'i', out, record['lat'], round(lat * SEMICIRCLES))
+        struct.pack_into(endian + 'i', out, record['lon'], round(lon * SEMICIRCLES))
         stats['placed'] += 1
 
     return summarize(bytes(out)), stats
 
 
-def rebuild(base_path, points, scale=True, reverse=False, gaps_only=False,
-            elevations=None, broken_only=False, limit=None):
+def rebuild(
+    base_path,
+    points,
+    scale=True,
+    reverse=False,
+    gaps_only=False,
+    elevations=None,
+    broken_only=False,
+    limit=None,
+):
     """Return (bytes, stats) with a position written into every record.
 
     For a base recorded with the GPS off, wholly or in part: those records
@@ -551,19 +630,21 @@ def rebuild(base_path, points, scale=True, reverse=False, gaps_only=False,
         points = points[::-1]
         elevations = elevations and elevations[::-1]
     data = open(base_path, 'rb').read()
-    records, anchors, cumulative, stats = match(data, points, scale,
-                                                gaps_only, elevations,
-                                                broken_only, limit)
+    records, anchors, cumulative, stats = match(
+        data, points, scale, gaps_only, elevations, broken_only, limit
+    )
 
     base = FitFile.from_file(base_path)
-    messages = [r.message for r in base.records
-                if not isinstance(r.message, DefinitionMessage)]
+    messages = [
+        r.message for r in base.records if not isinstance(r.message, DefinitionMessage)
+    ]
     decoded = [m for m in messages if type(m).__name__ == 'RecordMessage']
     # The match was made on the file's own bytes; pair it with fit_tool's
     # decode record by record.
     if len(decoded) != len(records):
-        raise ValueError(f'fit_tool decoded {len(decoded)} records, '
-                         f'the file has {len(records)}')
+        raise ValueError(
+            f'fit_tool decoded {len(decoded)} records, the file has {len(records)}'
+        )
 
     for message, record in zip(decoded, records):
         if record['distance'] is None:
@@ -571,8 +652,10 @@ def rebuild(base_path, points, scale=True, reverse=False, gaps_only=False,
         elif record['trusted']:
             stats['kept'] += 1
         else:
-            set_position(message, *locate(points, cumulative,
-                                          interpolate(anchors, record['distance'])))
+            set_position(
+                message,
+                *locate(points, cumulative, interpolate(anchors, record['distance'])),
+            )
             stats['placed'] += 1
 
     builder = FitFileBuilder(auto_define=True)
@@ -586,33 +669,58 @@ def main():
     parser.add_argument('base', help='FIT file with the good sensor data')
     parser.add_argument('route', help='GPX file with the route to follow')
     parser.add_argument('-o', '--out', help='output FIT file')
-    parser.add_argument('--no-scale', action='store_true',
-                        help='match raw distances instead of stretching the '
-                             'ride to the route length')
-    parser.add_argument('--reverse', action='store_true',
-                        help='the ride went round the route backwards')
-    parser.add_argument('--laps', type=int, default=1, metavar='N',
-                        help='the ride went round a looped route N times')
-    parser.add_argument('--max-speed', type=float, metavar='KMH',
-                        help='rebuild the distance the match runs on wherever '
-                             'it advances faster than this, for a watch whose '
-                             'distance comes from the jammed GPS itself')
-    parser.add_argument('--rebuild', action='store_true',
-                        help='re-encode the file to add positions, for a base '
-                             'recorded with no position field at all '
-                             '(needs fit-tool)')
-    parser.add_argument('--gaps-only', action='store_true',
-                        help='keep fixes that lie on the route and place only '
-                             'the missing, invalid or spoofed ones between them')
-    parser.add_argument('--broken-only', action='store_true',
-                        help='like --gaps-only, but also keep real fixes off '
-                             'the route and place only missing, invalid or '
-                             'spoofed ones')
-    parser.add_argument('--hills', action='store_true',
-                        help="anchor the placement where the recording's "
-                             "climbs line up with the route's <ele>")
-    parser.add_argument('-n', '--dry-run', action='store_true',
-                        help='report the match without writing')
+    parser.add_argument(
+        '--no-scale',
+        action='store_true',
+        help='match raw distances instead of stretching the ride to the route length',
+    )
+    parser.add_argument(
+        '--reverse', action='store_true', help='the ride went round the route backwards'
+    )
+    parser.add_argument(
+        '--laps',
+        type=int,
+        default=1,
+        metavar='N',
+        help='the ride went round a looped route N times',
+    )
+    parser.add_argument(
+        '--max-speed',
+        type=float,
+        metavar='KMH',
+        help='rebuild the distance the match runs on wherever '
+        'it advances faster than this, for a watch whose '
+        'distance comes from the jammed GPS itself',
+    )
+    parser.add_argument(
+        '--rebuild',
+        action='store_true',
+        help='re-encode the file to add positions, for a base '
+        'recorded with no position field at all '
+        '(needs fit-tool)',
+    )
+    parser.add_argument(
+        '--gaps-only',
+        action='store_true',
+        help='keep fixes that lie on the route and place only '
+        'the missing, invalid or spoofed ones between them',
+    )
+    parser.add_argument(
+        '--broken-only',
+        action='store_true',
+        help='like --gaps-only, but also keep real fixes off '
+        'the route and place only missing, invalid or '
+        'spoofed ones',
+    )
+    parser.add_argument(
+        '--hills',
+        action='store_true',
+        help="anchor the placement where the recording's "
+        "climbs line up with the route's <ele>",
+    )
+    parser.add_argument(
+        '-n', '--dry-run', action='store_true', help='report the match without writing'
+    )
     args = parser.parse_args()
 
     if not args.out and not args.dry_run:
@@ -629,51 +737,79 @@ def main():
         if args.hills:
             elevations = read_elevations(args.route)
             if elevations is None:
-                raise ValueError(f'{args.route}: --hills needs <ele> on every '
-                                 'track point')
+                raise ValueError(
+                    f'{args.route}: --hills needs <ele> on every track point'
+                )
         # A lap of a loop ends where the next one starts, so the route
         # repeated is the route the ride actually covered.
         points = points * args.laps
         elevations = elevations and elevations * args.laps
         if args.rebuild:
-            patched, stats = rebuild(args.base, points, not args.no_scale,
-                                     args.reverse, args.gaps_only, elevations,
-                                     args.broken_only, limit)
+            patched, stats = rebuild(
+                args.base,
+                points,
+                not args.no_scale,
+                args.reverse,
+                args.gaps_only,
+                elevations,
+                args.broken_only,
+                limit,
+            )
         else:
             data = open(args.base, 'rb').read()
-            patched, stats = graft(data, points, not args.no_scale,
-                                   args.reverse, args.gaps_only, elevations,
-                                   args.broken_only, limit)
-    except (ValueError, IndexError, KeyError, struct.error, ImportError,
-            ElementTree.ParseError) as err:
+            patched, stats = graft(
+                data,
+                points,
+                not args.no_scale,
+                args.reverse,
+                args.gaps_only,
+                elevations,
+                args.broken_only,
+                limit,
+            )
+    except (
+        ValueError,
+        IndexError,
+        KeyError,
+        struct.error,
+        ImportError,
+        ElementTree.ParseError,
+    ) as err:
         print(f'cannot graft: {err}', file=sys.stderr)
         return 1
 
-    laps = f", {args.laps} laps" if args.laps > 1 else ''
-    print(f"route     {len(points)} points, "
-          f"{stats['route_length'] / 1000:.3f} km{laps}")
-    print(f"ride      {stats['records']} records, {stats['ride_length'] / 1000:.3f} km")
+    laps = f', {args.laps} laps' if args.laps > 1 else ''
+    print(
+        f'route     {len(points)} points, {stats["route_length"] / 1000:.3f} km{laps}'
+    )
+    print(f'ride      {stats["records"]} records, {stats["ride_length"] / 1000:.3f} km')
     if limit:
-        print(f"pace      {stats['dropped'] / 1000:.3f} km of inflated "
-              f"distance dropped from {stats['replaced']} records")
-    print(f"scale     {stats['ratio']:.5f}")
+        print(
+            f'pace      {stats["dropped"] / 1000:.3f} km of inflated '
+            f'distance dropped from {stats["replaced"]} records'
+        )
+    print(f'scale     {stats["ratio"]:.5f}')
     if args.gaps_only or args.broken_only:
-        print(f"kept      {stats['kept'] - stats['off_route']} fixes on the route, "
-              f"{stats['anchors']} anchors")
+        print(
+            f'kept      {stats["kept"] - stats["off_route"]} fixes on the route, '
+            f'{stats["anchors"]} anchors'
+        )
     if args.broken_only:
-        print(f"kept      {stats['off_route']} real fixes off the route")
+        print(f'kept      {stats["off_route"]} real fixes off the route')
     if args.hills:
-        print(f"hills     {stats['hills']} anchors from the climbs")
-    print(f"placed    {stats['placed']}")
-    print(f"skipped   {stats['skipped']} records without a distance to place"
-          if args.rebuild else
-          f"skipped   {stats['skipped']} records written without a position field")
+        print(f'hills     {stats["hills"]} anchors from the climbs')
+    print(f'placed    {stats["placed"]}')
+    print(
+        f'skipped   {stats["skipped"]} records without a distance to place'
+        if args.rebuild
+        else f'skipped   {stats["skipped"]} records written without a position field'
+    )
 
     if args.dry_run:
         return 0
 
     open(args.out, 'wb').write(patched)
-    print(f"wrote     {args.out}")
+    print(f'wrote     {args.out}')
     return 0
 
 

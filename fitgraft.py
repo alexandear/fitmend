@@ -107,17 +107,20 @@ def main():
     parser.add_argument('base', help='FIT file with the good speed/power/HR data')
     parser.add_argument('donor', help='FIT file with the good GPS track')
     parser.add_argument('-o', '--out', required=True, help='output FIT file')
-    parser.add_argument('--gaps-only', action='store_true',
-                        help='keep existing fixes, fill only missing/invalid ones')
+    parser.add_argument(
+        '--gaps-only',
+        action='store_true',
+        help='keep existing fixes, fill only missing/invalid ones',
+    )
     args = parser.parse_args()
 
     stats = graft(args.base, args.donor, args.out, args.gaps_only)
-    print(f"records   {stats['records']}")
-    print(f"replaced  {stats['replaced']}")
-    print(f"filled    {stats['filled']}")
-    print(f"kept      {stats['kept']}")
-    print(f"unmatched {stats['unmatched']}")
-    print(f"wrote     {args.out}")
+    print(f'records   {stats["records"]}')
+    print(f'replaced  {stats["replaced"]}')
+    print(f'filled    {stats["filled"]}')
+    print(f'kept      {stats["kept"]}')
+    print(f'unmatched {stats["unmatched"]}')
+    print(f'wrote     {args.out}')
     return 1 if stats['unmatched'] else 0
 
 

@@ -30,8 +30,10 @@ DATE_TIME_FIELDS = {(0, 4), (18, 2), (19, 2), (34, 5)}
 RECORD = 20
 ACTIVITY = 34
 
+# fmt: off
 CRC_TABLE = [0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
              0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400]
+# fmt: on
 
 # 90, 1d, 2h30m, -45m, +1d4h, 1h5m30s
 DURATION = re.compile(r'^([+-]?)(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$')
@@ -55,8 +57,12 @@ def parse_duration(text):
     if not match or not any(match.group(n) for n in range(2, 6)):
         raise argparse.ArgumentTypeError(f'not a duration: {text}')
     sign, days, hours, minutes, seconds = match.groups()
-    total = (int(days or 0) * 86400 + int(hours or 0) * 3600
-             + int(minutes or 0) * 60 + int(seconds or 0))
+    total = (
+        int(days or 0) * 86400
+        + int(hours or 0) * 3600
+        + int(minutes or 0) * 60
+        + int(seconds or 0)
+    )
     return -total if sign == '-' else total
 
 
@@ -101,8 +107,9 @@ def walk(data, visit, on_message=None):
         # reference timestamp. Shifting every absolute timestamp by the same
         # amount leaves those offsets correct, so there is nothing to patch.
         if header & 0x80:
-            pos = read_fields(data, pos, definitions[(header >> 5) & 0x3],
-                              visit, on_message)
+            pos = read_fields(
+                data, pos, definitions[(header >> 5) & 0x3], visit, on_message
+            )
             continue
 
         local = header & 0xF
@@ -113,7 +120,7 @@ def walk(data, visit, on_message=None):
         pos += 1  # reserved
         endian = '>' if data[pos] else '<'
         pos += 1
-        global_num = struct.unpack(endian + 'H', data[pos:pos + 2])[0]
+        global_num = struct.unpack(endian + 'H', data[pos : pos + 2])[0]
         pos += 2
         count = data[pos]
         pos += 1
@@ -161,7 +168,7 @@ def survey(data):
     def visit(global_num, number, base_type, endian, pos, size, developer):
         if not is_date_time(global_num, number, base_type, size, developer):
             return
-        value = struct.unpack(endian + 'I', data[pos:pos + 4])[0]
+        value = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
         if value == INVALID:
             return
         if global_num == ACTIVITY and number in (5, TIMESTAMP):
@@ -205,7 +212,7 @@ def shift(data, seconds, window, zone=None):
         nonlocal count
         if not is_date_time(global_num, number, base_type, size, developer):
             return
-        value = struct.unpack(endian + 'I', data[pos:pos + 4])[0]
+        value = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
         if value == INVALID:
             return
         # Private messages reuse field 253 for values that are not dates at
@@ -242,7 +249,7 @@ def set_zone(out, seconds):
     if TIMESTAMP not in found or 5 not in found:
         return False
     stamp_pos, endian = found[TIMESTAMP]
-    stamp = struct.unpack(endian + 'I', bytes(out[stamp_pos:stamp_pos + 4]))[0]
+    stamp = struct.unpack(endian + 'I', bytes(out[stamp_pos : stamp_pos + 4]))[0]
     local_pos, endian = found[5]
     struct.pack_into(endian + 'I', out, local_pos, stamp + seconds)
     return True
@@ -257,7 +264,7 @@ def seconds_zone(seconds):
 def render(stamp, offset):
     utc = EPOCH + datetime.timedelta(seconds=stamp)
     local = utc + datetime.timedelta(seconds=offset)
-    return f"{local:%Y-%m-%d %H:%M:%S} local / {utc:%Y-%m-%d %H:%M:%S} UTC"
+    return f'{local:%Y-%m-%d %H:%M:%S} local / {utc:%Y-%m-%d %H:%M:%S} UTC'
 
 
 def main():
@@ -265,18 +272,34 @@ def main():
     parser.add_argument('input', help='FIT file to read')
     parser.add_argument('-o', '--out', help='output FIT file')
     when = parser.add_mutually_exclusive_group(required=True)
-    when.add_argument('--to', type=parse_datetime, metavar='DATETIME',
-                      help='move the start to this date-time, e.g. "2026-09-30 07:16"')
-    when.add_argument('--by', type=parse_duration, metavar='DURATION',
-                      help='shift by this much, e.g. 1d, -2h30m, 28615')
-    parser.add_argument('--utc', action='store_true',
-                        help='read --to as UTC instead of the activity local time')
-    parser.add_argument('--zone', type=parse_zone, metavar='OFFSET',
-                        help='the UTC offset the ride was ridden in, e.g. +3; '
-                             'reads --to as a time in that zone and records it '
-                             'in the file')
-    parser.add_argument('-n', '--dry-run', action='store_true',
-                        help='report the shift without writing')
+    when.add_argument(
+        '--to',
+        type=parse_datetime,
+        metavar='DATETIME',
+        help='move the start to this date-time, e.g. "2026-09-30 07:16"',
+    )
+    when.add_argument(
+        '--by',
+        type=parse_duration,
+        metavar='DURATION',
+        help='shift by this much, e.g. 1d, -2h30m, 28615',
+    )
+    parser.add_argument(
+        '--utc',
+        action='store_true',
+        help='read --to as UTC instead of the activity local time',
+    )
+    parser.add_argument(
+        '--zone',
+        type=parse_zone,
+        metavar='OFFSET',
+        help='the UTC offset the ride was ridden in, e.g. +3; '
+        'reads --to as a time in that zone and records it '
+        'in the file',
+    )
+    parser.add_argument(
+        '-n', '--dry-run', action='store_true', help='report the shift without writing'
+    )
     args = parser.parse_args()
 
     if not args.out and not args.dry_run:
@@ -298,10 +321,10 @@ def main():
         target = args.to.replace(tzinfo=datetime.timezone.utc)
         seconds = int((target - EPOCH).total_seconds()) - offset - start
 
-    print(f"start  {render(start, offset)}")
-    print(f"end    {render(last, offset)}")
-    print(f"shift  {seconds}s")
-    print(f"new    {render(start + seconds, offset)}")
+    print(f'start  {render(start, offset)}')
+    print(f'end    {render(last, offset)}')
+    print(f'shift  {seconds}s')
+    print(f'new    {render(start + seconds, offset)}')
 
     if args.dry_run:
         return 0
@@ -312,10 +335,10 @@ def main():
     low, high = window
     patched, count = shift(data, seconds, (low - 86400, high + 86400), args.zone)
     open(args.out, 'wb').write(patched)
-    print(f"moved  {count} timestamps")
+    print(f'moved  {count} timestamps')
     if args.zone is not None:
-        print(f"zone   recorded as UTC{seconds_zone(args.zone)}")
-    print(f"wrote  {args.out}")
+        print(f'zone   recorded as UTC{seconds_zone(args.zone)}')
+    print(f'wrote  {args.out}')
     return 0
 
 
