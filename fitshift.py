@@ -187,7 +187,12 @@ def survey(data):
     offset = 0
     if 5 in local and TIMESTAMP in local:
         offset = local[5] - local[TIMESTAMP]
-    return min(span), max(span), (min(stamps), max(stamps)), offset
+
+    # The shiftable window is that span and nothing wider. Taken from every
+    # timestamp in the file, a private field 253 holding a small counter
+    # would stretch it down to the counter, and the shift would move it.
+    first, last = min(span), max(span)
+    return first, last, (first, last), offset
 
 
 def shift(data, seconds, window, zone=None):
