@@ -17,6 +17,9 @@ EPOCH = datetime.datetime(1989, 12, 31, tzinfo=datetime.timezone.utc)
 
 UINT32 = 6
 
+# The FIT "invalid" sentinel for a uint32: no date at all, and never moved.
+INVALID = 0xFFFFFFFF
+
 # Field 253 is `timestamp` in every message type. The rest are per-message:
 # file_id.time_created, session.start_time, lap.start_time and
 # activity.local_timestamp. Other uint32 fields are left alone, because a
@@ -159,6 +162,8 @@ def survey(data):
         if not is_date_time(global_num, number, base_type, size, developer):
             return
         value = struct.unpack(endian + 'I', data[pos:pos + 4])[0]
+        if value == INVALID:
+            return
         if global_num == ACTIVITY and number in (5, TIMESTAMP):
             local[number] = value
         if number != TIMESTAMP:
@@ -196,6 +201,8 @@ def shift(data, seconds, window, zone=None):
         if not is_date_time(global_num, number, base_type, size, developer):
             return
         value = struct.unpack(endian + 'I', data[pos:pos + 4])[0]
+        if value == INVALID:
+            return
         # Private messages reuse field 253 for values that are not dates at
         # all. Anything outside the activity's own window is not ours to move.
         if not low <= value <= high:
