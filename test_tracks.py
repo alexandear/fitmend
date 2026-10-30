@@ -17,6 +17,9 @@ recorded. Two of them live in testdata/, and these tests run over those bytes.
     field, so only the re-encoding path can give it a position at all. It has
     the heart rate `fitpace.py --keep` models from, and climbs enough for
     `--hills` to find.
+
+One class here reads no file: `fitgraft.py` cannot be imported without
+fit_tool, so its own arithmetic is covered where the skip already is.
 """
 
 import collections
@@ -349,6 +352,28 @@ class Pace(unittest.TestCase):
 
 
 @unittest.skipUnless(FIT_TOOL, 'fit-tool is the rebuild extra, not a dependency')
+class Valid(unittest.TestCase):
+    """fitgraft's gate on a donor fix.
+
+    Plain arithmetic, but fitgraft imports fit_tool to read a file at all,
+    which is why it is covered here rather than in test_fitmend.py.
+    """
+
+    def test_a_fix_is_a_place_on_earth(self):
+        import fitgraft
+
+        self.assertTrue(fitgraft.is_valid(50.0, 30.0))
+        # 0x7FFFFFFF semicircles is 180.0 degrees: what a jammer writes.
+        self.assertFalse(fitgraft.is_valid(180.0, 30.0))
+        self.assertFalse(fitgraft.is_valid(50.0, -180.0))
+        # A record written without the field decodes as no value at all.
+        self.assertFalse(fitgraft.is_valid(None, 30.0))
+        self.assertFalse(fitgraft.is_valid(50.0, None))
+        # Past the pole is nowhere.
+        self.assertFalse(fitgraft.is_valid(95.0, 30.0))
+
+
+@unittest.skipUnless(FIT_TOOL, 'fit-tool is the rebuild extra, not a dependency')
 class Rebuild(unittest.TestCase):
     """The two paths that re-encode: fitroute --rebuild and fitgraft."""
 
@@ -390,6 +415,15 @@ class Rebuild(unittest.TestCase):
         self.assertEqual([r for r in after if r['fix'] is None], [])
         self.assertLess(furthest_off_route(self.out, self.points, self.cumulative), 0.1)
 
+    def test_rebuilding_a_file_already_on_the_route_keeps_its_fixes(self):
+        # The second pass has the positions the first one wrote, and they all
+        # lie on the route, so broken_only places nothing again.
+        out, stats = fitroute.rebuild(self.rebuilt_path, self.points, broken_only=True)
+        self.assertEqual(stats['kept'], 2517)
+        self.assertEqual((stats['placed'], stats['skipped']), (0, 0))
+        records, _ = fitroute.read_records(out)
+        self.assertEqual([r['fix'] for r in records], self.fixes(self.rebuilt_path))
+
     def test_the_re_encoded_file_still_parses(self):
         self.assertEqual(fitshift.walk(self.out, lambda *args: None), len(self.out) - 2)
         self.assertTrue(crc_is_right(self.out))
@@ -411,6 +445,21 @@ class Rebuild(unittest.TestCase):
         )
         self.assertEqual(self.fixes(self.out_path), self.fixes(self.donor_path))
         self.assertEqual(sensors(read(self.out_path)), sensors(self.data))
+
+    def test_a_donor_recorded_on_another_day_matches_nothing(self):
+        # fitgraft pairs the two files by timestamp alone, so a donor whose
+        # every timestamp is a day out has nothing to give.
+        donor = read(self.donor_path)
+        _, _, window, _ = fitshift.survey(donor)
+        moved, _ = fitshift.shift(donor, DAY, (window[0] - DAY, window[1] + DAY))
+        elsewhen = os.path.join(os.path.dirname(self.out_path), 'elsewhen.fit')
+        with open(elsewhen, 'wb') as target:
+            target.write(moved)
+
+        stats = self.fitgraft.graft(BLIND, elsewhen, self.out_path)
+        self.assertEqual(stats['unmatched'], 2517)
+        self.assertEqual(stats['filled'], 0)
+        self.assertEqual(stats['replaced'], 0)
 
     def test_gaps_only_keeps_the_fixes_the_base_already_has(self):
         stats = self.fitgraft.graft(

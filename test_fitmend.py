@@ -5,6 +5,7 @@ depends on a real activity or on fit-tool.
 """
 
 import argparse
+import datetime
 import os
 import struct
 import tempfile
@@ -35,6 +36,14 @@ ZONE = 3 * 3600
 SENTINEL = 0x7FFFFFFF
 
 
+def raw(body):
+    """Return the bytes of a FIT file whose message stream is body."""
+    header = struct.pack('<BBHI4s', 14, 0x20, 2158, len(body), b'.FIT')
+    header += struct.pack('<H', fitshift.crc16(header[:12]))
+    data = header + bytes(body)
+    return data + struct.pack('<H', fitshift.crc16(data))
+
+
 def encode(messages):
     """Return the bytes of a FIT file holding these data messages.
 
@@ -52,10 +61,7 @@ def encode(messages):
         for _, kind, value in fields:
             _, _, fmt = BASE[kind]
             body += struct.pack('<' + fmt, value)
-    header = struct.pack('<BBHI4s', 14, 0x20, 2158, len(body), b'.FIT')
-    header += struct.pack('<H', fitshift.crc16(header[:12]))
-    data = header + bytes(body)
-    return data + struct.pack('<H', fitshift.crc16(data))
+    return raw(body)
 
 
 def semicircles(degrees):
@@ -131,6 +137,18 @@ def route(path, points, elevations=None):
     return path
 
 
+def sint32_fields(data, global_num):
+    """Each sint32 field of the first message of this type, by number."""
+    found = {}
+
+    def visit(kind, number, base_type, endian, pos, size, developer):
+        if kind == global_num and size == 4 and base_type == BASE['sint32'][0]:
+            found.setdefault(number, struct.unpack_from(endian + 'i', data, pos)[0])
+
+    fitshift.walk(data, visit)
+    return found
+
+
 def north(count, metres, lat=50.0, lon=30.0):
     """count points going north from (lat, lon), metres apart."""
     step = metres / (fitroute.EARTH_RADIUS * 3.141592653589793 / 180.0)
@@ -180,6 +198,76 @@ class Walk(unittest.TestCase):
             fitshift.walk(b'not a fit file at all', lambda *args: None)
 
 
+class Headers(unittest.TestCase):
+    """The two message headers encode() never writes."""
+
+    def test_a_compressed_timestamp_header_carries_no_timestamp_field(self):
+        # Definition for local type 0: record, distance alone.
+        body = bytearray([0x40, 0, 0])
+        body += struct.pack('<HB', fitshift.RECORD, 1)
+        body += bytes([5, 4, BASE['uint32'][0]])
+        # The data message: bit 7 set, local type 0 in bits 5-6, and a 5-bit
+        # offset from the rolling reference timestamp in the rest.
+        body += bytes([0x80 | 0x05])
+        body += struct.pack('<I', 1234)
+        data = raw(body)
+
+        seen = []
+
+        def visit(global_num, number, base_type, endian, pos, size, developer):
+            seen.append((global_num, number, struct.unpack_from('<I', data, pos)[0]))
+
+        end = fitshift.walk(data, visit)
+        self.assertEqual(seen, [(fitshift.RECORD, 5, 1234)])
+        self.assertEqual(end, len(data) - 2)
+
+    def test_a_record_under_one_is_patched_like_any_other(self):
+        # The offset in the header is relative to the timestamp before it, so
+        # a shift that moves every absolute timestamp by the same amount
+        # leaves it correct and the fields under the header move with it.
+        body = bytearray([0x40, 0, 0])
+        body += struct.pack('<HB', fitshift.RECORD, 1)
+        body += bytes([253, 4, BASE['uint32'][0]])
+        body += bytes([0x00]) + struct.pack('<I', START)
+        body += bytes([0x80 | 0x05]) + struct.pack('<I', START + 1)
+        data = raw(body)
+
+        out, count = fitshift.shift(data, 86400, (START - 10, START + 10))
+        self.assertEqual(count, 2)
+
+        moved = []
+
+        def visit(global_num, number, base_type, endian, pos, size, developer):
+            moved.append(struct.unpack_from('<I', out, pos)[0])
+
+        fitshift.walk(out, visit)
+        self.assertEqual(moved, [START + 86400, START + 1 + 86400])
+
+    def test_a_developer_field_is_walked_but_never_moved(self):
+        body = bytearray([0x60, 0, 0])  # definition, with developer fields
+        body += struct.pack('<HB', fitshift.RECORD, 1)
+        body += bytes([253, 4, BASE['uint32'][0]])
+        body += bytes([1])  # one developer field
+        body += bytes([253, 4, 0])  # its number, its size, its data index
+        body += bytes([0x00])
+        body += struct.pack('<II', START, START)
+        data = raw(body)
+
+        seen = []
+
+        def visit(global_num, number, base_type, endian, pos, size, developer):
+            seen.append(developer)
+
+        self.assertEqual(fitshift.walk(data, visit), len(data) - 2)
+        self.assertEqual(seen, [False, True])
+
+        # Both fields are a uint32 holding the same date; only the real one
+        # is a date_time.
+        out, count = fitshift.shift(data, 86400, (START - 10, START + 10))
+        self.assertEqual(count, 1)
+        self.assertEqual(struct.unpack_from('<I', out, len(out) - 6)[0], START)
+
+
 class IsDateTime(unittest.TestCase):
     def test_field_253_is_a_date_in_any_message(self):
         self.assertTrue(fitshift.is_date_time(PRIVATE, 253, 0x86, 4, False))
@@ -226,6 +314,11 @@ class Survey(unittest.TestCase):
         _, last, window, _ = fitshift.survey(data)
         self.assertEqual(last, START + 10)
         self.assertLess(window[1], fitshift.INVALID)
+
+    def test_a_file_with_no_timestamp_at_all_is_refused(self):
+        data = encode([(FILE_ID, [(0, 'uint8', 4), (4, 'uint32', START)])])
+        with self.assertRaisesRegex(ValueError, 'no timestamps'):
+            fitshift.survey(data)
 
     def test_a_private_counter_does_not_stretch_the_window(self):
         data = activity(
@@ -293,6 +386,16 @@ class Shift(unittest.TestCase):
         self.assertEqual(fitshift.survey(out)[3], -7200)
 
 
+class SetZone(unittest.TestCase):
+    def test_it_reports_what_it_could_not_find(self):
+        # A file without an activity message declares no offset to rewrite.
+        data = activity([(START, [(5, 'uint32', 0)])])
+        self.assertTrue(fitshift.set_zone(bytearray(data), ZONE))
+
+        data = encode([(fitshift.RECORD, [(253, 'uint32', START)])])
+        self.assertFalse(fitshift.set_zone(bytearray(data), ZONE))
+
+
 class Parsing(unittest.TestCase):
     def test_durations(self):
         self.assertEqual(fitshift.parse_duration('1d'), 86400)
@@ -315,10 +418,34 @@ class Parsing(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             fitshift.parse_zone('Europe/Kyiv')
 
+    def test_date_times(self):
+        self.assertEqual(
+            fitshift.parse_datetime('2026-09-30 07:16'),
+            datetime.datetime(2026, 9, 30, 7, 16),  # noqa: DTZ001
+        )
+        # The form a filename tends to carry.
+        self.assertEqual(
+            fitshift.parse_datetime('2026/09/30 07:16:05'),
+            datetime.datetime(2026, 9, 30, 7, 16, 5),  # noqa: DTZ001
+        )
+
+    def test_a_date_time_is_not_free_text(self):
+        for text in ('', 'yesterday', '30.09.2026'):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                fitshift.parse_datetime(text)
+
     def test_seconds_zone_renders_the_offset(self):
         self.assertEqual(fitshift.seconds_zone(10800), '+3')
         self.assertEqual(fitshift.seconds_zone(19800), '+5:30')
         self.assertEqual(fitshift.seconds_zone(-18000), '-5')
+        self.assertEqual(fitshift.seconds_zone(0), '+0')
+
+    def test_render_shows_both_clocks(self):
+        # date_time 0 is the FIT epoch itself.
+        self.assertEqual(
+            fitshift.render(0, ZONE),
+            '1989-12-31 03:00:00 local / 1989-12-31 00:00:00 UTC',
+        )
 
 
 class Geometry(unittest.TestCase):
@@ -363,6 +490,18 @@ class Geometry(unittest.TestCase):
         off, along = fitroute.project(points, cumulative, fix, 500, 800)
         self.assertGreater(along, 390)
         self.assertGreater(off, 290)
+
+
+class Height(unittest.TestCase):
+    def test_it_interpolates_between_track_points(self):
+        self.assertAlmostEqual(
+            fitroute.height([0.0, 100.0, 200.0], [10.0, 20.0, 30.0], 150.0), 25.0
+        )
+
+    def test_past_either_end_the_nearest_point_stands(self):
+        cumulative, elevations = [0.0, 100.0, 200.0], [10.0, 20.0, 30.0]
+        self.assertAlmostEqual(fitroute.height(cumulative, elevations, 9999.0), 30.0)
+        self.assertAlmostEqual(fitroute.height(cumulative, elevations, -50.0), 10.0)
 
 
 class Interpolate(unittest.TestCase):
@@ -538,23 +677,65 @@ class Graft(unittest.TestCase):
         self.assertAlmostEqual(stats['dropped'], 1000.0)
         self.assertAlmostEqual(stats['ride_length'], 12.0)
 
+    def test_reverse_runs_the_route_backwards(self):
+        data = self.ride([None] * 5)
+        out, _ = fitroute.graft(data, self.points, reverse=True)
+        records, _ = fitroute.read_records(out)
+        self.assertAlmostEqual(records[0]['fix'][0], self.points[-1][0], places=5)
+        self.assertAlmostEqual(records[-1]['fix'][0], self.points[0][0], places=5)
+
+    def test_a_ride_with_no_distance_field_has_nothing_to_match_on(self):
+        records = [(START + index, [(3, 'uint8', 140)]) for index in range(5)]
+        with self.assertRaisesRegex(ValueError, 'no record.distance'):
+            fitroute.graft(activity(records), self.points)
+
+    def test_a_ride_that_never_moved_has_nothing_to_match_on(self):
+        records = [(START + index, [(5, 'uint32', 0)]) for index in range(5)]
+        with self.assertRaisesRegex(ValueError, 'no distance to match'):
+            fitroute.graft(activity(records), self.points)
+
+    def test_a_recording_without_altitude_has_no_climbs_to_anchor(self):
+        # --hills rests on the recording's own altimeter; these records were
+        # written without one, so the two ends of the scale are all there is.
+        _, anchors, _, stats = fitroute.match(
+            self.ride([None] * 5),
+            self.points,
+            elevations=[0.0, 10.0, 20.0, 30.0, 40.0],
+        )
+        self.assertEqual(stats['hills'], 0)
+        self.assertEqual(len(anchors), 2)
+
     def test_the_summary_positions_come_from_the_records(self):
         out, _ = fitroute.graft(self.ride([None] * 5), self.points)
-        found = {}
-
-        def visit(global_num, number, base_type, endian, pos, size, developer):
-            if global_num in (SESSION, LAP) and size == 4 and base_type == 0x85:
-                found[(global_num, number)] = struct.unpack_from(
-                    endian + 'i', out, pos
-                )[0]
-
-        fitshift.walk(out, visit)
-        self.assertEqual(found[(SESSION, 3)], semicircles(self.points[0][0]))
-        self.assertEqual(found[(SESSION, 38)], semicircles(self.points[-1][0]))
+        session = sint32_fields(out, SESSION)
+        lap = sint32_fields(out, LAP)
+        self.assertEqual(session[3], semicircles(self.points[0][0]))
+        self.assertEqual(session[38], semicircles(self.points[-1][0]))
         # 27, 28 are the lap's north-east corner and 29, 30 its south-west.
-        self.assertEqual(found[(LAP, 27)], semicircles(self.points[-1][0]))
-        self.assertEqual(found[(LAP, 29)], semicircles(self.points[0][0]))
-        self.assertEqual(found[(LAP, 30)], semicircles(30.0))
+        self.assertEqual(lap[27], semicircles(self.points[-1][0]))
+        self.assertEqual(lap[29], semicircles(self.points[0][0]))
+        self.assertEqual(lap[30], semicircles(30.0))
+
+    def test_a_summary_without_a_start_time_keeps_its_positions(self):
+        # There is no span to gather the fixes of, so nothing is written back.
+        records = [
+            (
+                fitshift.RECORD,
+                [
+                    (253, 'uint32', START + index),
+                    (5, 'uint32', index * 100 * 100),
+                    (0, 'sint32', SENTINEL),
+                    (1, 'sint32', SENTINEL),
+                ],
+            )
+            for index in range(5)
+        ]
+        data = encode(
+            [*records, (SESSION, [(3, 'sint32', SENTINEL), (4, 'sint32', SENTINEL)])]
+        )
+        out, stats = fitroute.graft(data, self.points)
+        self.assertEqual(stats['placed'], 5)
+        self.assertEqual(sint32_fields(out, SESSION), {3: SENTINEL, 4: SENTINEL})
 
     def test_a_record_with_no_position_field_is_skipped(self):
         records = [
@@ -567,6 +748,64 @@ class Graft(unittest.TestCase):
         out, _ = fitroute.graft(self.ride([None] * 5), self.points)
         end = fitshift.walk(out, lambda *args: None)
         self.assertEqual(struct.unpack('<H', out[end:])[0], fitshift.crc16(out[:end]))
+
+
+class Align(unittest.TestCase):
+    """The anchors the climbs pin down between the trusted fixes.
+
+    test_tracks.Hills runs this over a real altimeter; these cases are the
+    profiles that must add nothing, which no real file happened to hold.
+    """
+
+    def setUp(self):
+        self.points = north(50, 100)
+        self.climb = [index * 2.0 for index in range(50)]
+        self.flat = [100.0] * 50
+        # The same shape as the climb, a twentieth of the relief.
+        self.gentle = [index * 0.1 for index in range(50)]
+
+    def ride(self, altitudes):
+        """One record every 100 m, each carrying its altitude in metres."""
+        records = [
+            (
+                START + index * 10,
+                [
+                    (5, 'uint32', index * 100 * 100),
+                    (78, 'uint32', round((altitude + 500) * 5)),
+                    (0, 'sint32', SENTINEL),
+                    (1, 'sint32', SENTINEL),
+                ],
+            )
+            for index, altitude in enumerate(altitudes)
+        ]
+        return activity(records)
+
+    def test_a_climb_that_follows_the_route_anchors_the_placement(self):
+        _, anchors, _, stats = fitroute.match(
+            self.ride(self.climb), self.points, elevations=self.climb
+        )
+        self.assertGreater(stats['hills'], 0)
+        # The ride measures the same metres the route does, so each anchor
+        # lands where it was ridden, give or take the lag that was searched.
+        for ride, route in anchors:
+            self.assertAlmostEqual(ride, route, delta=fitroute.HILL_LAG)
+
+    def test_a_window_without_the_relief_to_go_on_is_passed_over(self):
+        # It follows the route's climb exactly, but a few metres over three
+        # kilometres is within what an altimeter drifts by.
+        _, anchors, _, stats = fitroute.match(
+            self.ride(self.gentle), self.points, elevations=self.climb
+        )
+        self.assertEqual(stats['hills'], 0)
+        self.assertEqual(len(anchors), 2)
+
+    def test_a_flat_route_has_nothing_to_match_against(self):
+        # Correlation is undefined against a constant, so no lag wins.
+        _, anchors, _, stats = fitroute.match(
+            self.ride(self.climb), self.points, elevations=self.flat
+        )
+        self.assertEqual(stats['hills'], 0)
+        self.assertEqual(len(anchors), 2)
 
 
 class Unjam(unittest.TestCase):
@@ -627,6 +866,36 @@ class Unjam(unittest.TestCase):
             if number in (SESSION, LAP)
         ]
         self.assertEqual(totals, [100.0, 100.0])
+
+    def test_a_run_with_no_distance_is_nothing_to_rebuild(self):
+        records = [(START + index, [(3, 'uint8', 140)]) for index in range(5)]
+        with self.assertRaisesRegex(ValueError, 'no records with a timestamp'):
+            fitpace.unjam(activity(records), 5.0, 27.0)
+
+    def test_a_lap_outside_the_records_keeps_its_totals(self):
+        # A watch can leave a lap behind that no record falls inside; there
+        # is nothing to total it from, so it is left as written.
+        data = activity(
+            [
+                (START + i, [(5, 'uint32', d * 100), (3, 'uint8', 140)])
+                for i, d in enumerate([0, 3, 6, 9, 109, 112])
+            ],
+            extra=[
+                (
+                    LAP,
+                    [
+                        (253, 'uint32', START + 7200),
+                        (2, 'uint32', START + 3600),
+                        (7, 'uint32', 1000),
+                        (9, 'uint32', 4242),
+                    ],
+                )
+            ],
+        )
+        out, _ = fitpace.unjam(data, 5.0, 27.0)
+        messages, _ = fitpace.read_messages(out)
+        totals = [fields[9][0] for number, fields in messages if number == LAP]
+        self.assertEqual(totals[-1], 4242)
 
     def test_a_run_with_no_jump_is_not_this_tool_s_job(self):
         with self.assertRaisesRegex(ValueError, 'faster than'):
@@ -696,6 +965,23 @@ class Pace(unittest.TestCase):
         ]
         with self.assertRaisesRegex(ValueError, 'heart rate'):
             fitpace.pace(activity(records), 500.0, 1200.0)
+
+    def test_a_run_without_heart_rate_cannot_be_modelled(self):
+        records = [
+            (START + index, [(5, 'uint32', index * 300)]) for index in range(300)
+        ]
+        with self.assertRaisesRegex(ValueError, 'no records with timestamp'):
+            fitpace.pace(activity(records), 500.0, 1200.0)
+
+    def test_a_route_shorter_than_the_kept_part_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'only'):
+            fitpace.pace(self.ride(), 500.0, 400.0)
+
+    def test_a_keep_inside_the_warmup_leaves_too_little_to_learn_from(self):
+        # The first two minutes raise heart rate without raising pace, so
+        # they are dropped; a --keep inside them leaves no good part at all.
+        with self.assertRaisesRegex(ValueError, 'too little'):
+            fitpace.pace(self.ride(), 100.0, 1200.0)
 
     def test_a_run_that_never_reaches_keep(self):
         with self.assertRaisesRegex(ValueError, 'never gets past'):

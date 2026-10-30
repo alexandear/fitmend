@@ -43,8 +43,9 @@ all, each with the GPX route it covered. The module docstring says what each
 file holds, and the tests assert invariants rather than golden bytes — what
 moved and what did not, that placed fixes land on the route, that the parse
 still ends on the file CRC — so a deliberate change does not rewrite them.
-`test_tracks.Rebuild` is the one class that covers `fitgraft.py` and
-`fitroute.py --rebuild`; it is skipped unless `fit-tool` is installed.
+`test_tracks.Rebuild` and `test_tracks.Valid` are the classes that cover
+`fitgraft.py` and `fitroute.py --rebuild`; both are skipped unless `fit-tool`
+is installed.
 
 `tracks/` is gitignored and holds the rest of the real activities, which stay
 out of the repo.
