@@ -426,6 +426,21 @@ worth repeating, because each one is a decision rather than an oversight:
 The `CRC_TABLE` in `fitshift.py` is fenced with `# fmt: off` so the sixteen
 values stay a grid, which is how they are checked against the FIT spec.
 
+## Hook
+
+`.githooks/pre-commit` runs those two commands and the suite. It is checked
+in rather than left in `.git/hooks`, so a clone gets it by pointing git at the
+directory, once:
+
+    git config core.hooksPath .githooks
+
+It refuses the commit if `ruff` would reformat anything, if `ruff check`
+reports anything, or if a test fails — it does not reformat the code itself,
+because a formatter that edits files mid-commit either leaves the change
+unstaged or stages something nobody read. `git commit --no-verify` skips it.
+With `fit-tool` installed the suite it runs takes about seven seconds, and
+without it under one.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

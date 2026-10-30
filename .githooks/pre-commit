@@ -1,0 +1,20 @@
+#!/bin/sh
+# Refuse a commit that ruff would reformat, that ruff lints, or that the
+# suite fails. Enable it once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# `git commit --no-verify` skips it. It checks the working tree rather than
+# the staged content, which is the same thing unless a change is half staged.
+
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! uv run ruff format --check .; then
+	echo 'pre-commit: run `uv run ruff format .`' >&2
+	exit 1
+fi
+
+uv run ruff check .
+uv run python -m unittest

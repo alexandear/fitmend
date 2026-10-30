@@ -62,6 +62,10 @@ uv run ruff format .
 uv run ruff check .
 ```
 
+`.githooks/pre-commit` runs both, in `--check` mode, and then the suite; a
+clone enables it with `git config core.hooksPath .githooks`. It never edits
+the code, so a commit it refuses is fixed by running the two commands above.
+
 Single quotes, 88 columns. The rule set is broad and listed in
 `pyproject.toml` with a comment on each family; both it and the `ignore` list
 are the interesting part, so read them before adding a rule or a `noqa`. The
