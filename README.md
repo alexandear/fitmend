@@ -375,6 +375,32 @@ field 253 that is a counter rather than a date, the invalid sentinels for a
 date and for a position, a record written with no position field, and a route
 that passes the same point twice.
 
+## Style
+
+    uv run ruff format .
+    uv run ruff check .
+
+`ruff` formats and lints, configured in `pyproject.toml`: single quotes, 88
+columns, and most of the rule families that do not argue with how the code is
+written. The exclusions are listed there with a reason each, and four are
+worth repeating, because each one is a decision rather than an oversight:
+
+- `PLC0415`, imports not at top level. `fitroute.rebuild()` imports
+  `fit_tool` inside the function. That is what keeps the default path
+  stdlib-only; hoisting it would make every run depend on the library.
+- `SIM115`, `open()` without a context manager. Each tool reads its input
+  with a one-line `open(path, 'rb').read()` and writes its output the same
+  way, in a `main()` that exits straight after. A `with` block there buys a
+  level of indentation and nothing else.
+- `S314`, `ElementTree` on untrusted XML. The GPX is a route file the user
+  named on the command line, and `defusedxml` would be a dependency.
+- `PLR2004`, magic values. The constants in the parser are FIT field and base
+  type numbers; naming each one moves the spec away from the code that reads
+  it.
+
+The `CRC_TABLE` in `fitshift.py` is fenced with `# fmt: off` so the sixteen
+values stay a grid, which is how they are checked against the FIT spec.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

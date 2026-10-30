@@ -13,3 +13,68 @@ rebuild = ["fit-tool>=0.9.16"]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtins shadowed
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "DTZ",  # naive datetimes
+    "E",    # pycodestyle
+    "ERA",  # commented-out code
+    "EXE",  # shebangs
+    "F",    # pyflakes
+    "FA",   # __future__ annotations
+    "FURB", # refurb
+    "G",    # logging format
+    "I",    # isort
+    "INP",  # implicit namespace packages
+    "INT",  # gettext
+    "ISC",  # implicit string concat
+    "LOG",  # logging
+    "N",    # pep8-naming
+    "PERF", # perflint
+    "PGH",  # blanket noqa and type: ignore
+    "PIE",  # misc lints
+    "PLC",  # pylint convention
+    "PLE",  # pylint error
+    "PLW",  # pylint warning
+    "RET",  # return statements
+    "RSE",  # raise
+    "RUF",  # ruff-specific
+    "S",    # bandit
+    "SIM",  # simplify
+    "SLOT", # __slots__
+    "T10",  # leftover breakpoints
+    "TID",  # tidy imports
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+    "YTT",  # sys.version misuse
+]
+# Left out rather than fought: ANN and D (the code carries no annotations and
+# names its functions instead of docstringing every one), PT (the suite is
+# unittest), PTH (whole files are read and written with open(), not Path),
+# PLR (magic values are FIT field numbers, and the match functions take the
+# arguments they take), Q and COM (the formatter owns quotes and commas),
+# T20 (print is how a CLI reports), TRY and EM (the messages read better
+# inline), FBT, CPY, ICN (ElementTree is not ET).
+ignore = [
+    "ISC001",  # conflicts with the formatter
+    "PLC0415", # fit_tool is imported inside rebuild() so the default path need not
+    "S314",    # a GPX route is a local file the user chose, and defusedxml is a dependency
+    "SIM115",  # one-line open().read() in a main() that exits; `with` only adds indentation
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["fitgraft", "fitpace", "fitroute", "fitshift"]

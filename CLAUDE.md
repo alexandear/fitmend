@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 Four standalone CLI scripts, run with `uv`. The project is a uv virtual
-project (`package = false`): there is no package, build step or linter.
+project (`package = false`): there is no package and no build step.
 
 ```sh
 uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
@@ -37,6 +37,28 @@ tests there rather than reaching for a sample file; the `fitgraft.py` and
 writing; use it against `tracks/*.fit` to check a change. `tracks/` holds real
 sample activities (`Lunch_Ride.fit`, `Morning_Run.fit`, a `09.10.2026.gpx` route)
 alongside already-produced outputs.
+
+`ruff` is the formatter and the linter, configured in `pyproject.toml`. Run
+both before calling a change done:
+
+```sh
+uv run ruff format .
+uv run ruff check .
+```
+
+Single quotes, 88 columns. The rule set is broad and listed in
+`pyproject.toml` with a comment on each family; both it and the `ignore` list
+are the interesting part, so read them before adding a rule or a `noqa`. The
+four standing exemptions are the lazy `fit_tool` import inside `rebuild()`
+(`PLC0415`), `ElementTree` on a GPX file the user named (`S314`), the
+one-line `open(...).read()` in each `main()` (`SIM115`), and `ISC001`, which
+the formatter owns. Whole families left out rather than fought: `ANN` and `D`
+(no annotations, and function names in place of per-function docstrings),
+`PT` (the suite is unittest), `PTH`, `PLR` (magic values are FIT field
+numbers), `T20` (print is how a CLI reports), `TRY`/`EM`, `ICN`
+(`ElementTree`, not `ET`). The `CRC_TABLE` grid in `fitshift.py` is fenced
+with `# fmt: off`, since one hex value per line is harder to check against
+the spec than four rows of four.
 
 ## Architecture
 
