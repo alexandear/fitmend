@@ -4,6 +4,7 @@ Every test builds the FIT bytes it needs with encode(), so none of them
 depends on a real activity or on fit-tool.
 """
 
+import argparse
 import os
 import struct
 import tempfile
@@ -66,7 +67,7 @@ def activity(records, extra=()):
     first, last = records[0][0], records[-1][0]
     messages = [(FILE_ID, [(0, 'uint8', 4), (4, 'uint32', first)])]
     for stamp, fields in records:
-        messages.append((fitshift.RECORD, [(253, 'uint32', stamp)] + fields))
+        messages.append((fitshift.RECORD, [(253, 'uint32', stamp), *fields]))
     messages += [
         (
             LAP,
@@ -264,7 +265,7 @@ class Shift(unittest.TestCase):
         # file_id, three records, the lap and session start and timestamp,
         # and the activity's timestamp and local_timestamp.
         self.assertEqual(count, 10)
-        moved = dict(((g, n), v) for g, n, v in self.stamps(out))
+        moved = {(g, n): v for g, n, v in self.stamps(out)}
         self.assertEqual(moved[(fitshift.RECORD, 253)], START + 2 + 86400)
         self.assertEqual(moved[(ACTIVITY, 5)], START + 2 + ZONE + 86400)
 
@@ -301,7 +302,7 @@ class Parsing(unittest.TestCase):
 
     def test_a_duration_needs_a_number(self):
         for text in ('', 'tomorrow', '+'):
-            with self.assertRaises(Exception):
+            with self.assertRaises(argparse.ArgumentTypeError):
                 fitshift.parse_duration(text)
 
     def test_zones(self):
@@ -311,7 +312,7 @@ class Parsing(unittest.TestCase):
         self.assertEqual(fitshift.parse_zone('0'), 0)
 
     def test_a_zone_is_not_free_text(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(argparse.ArgumentTypeError):
             fitshift.parse_zone('Europe/Kyiv')
 
     def test_seconds_zone_renders_the_offset(self):
@@ -454,7 +455,7 @@ class Graft(unittest.TestCase):
         """Five records 100 m apart, each with the given (lat, lon) or None."""
         records = []
         for index, fix in enumerate(fixes):
-            lat, lon = fix if fix else (SENTINEL, SENTINEL)
+            lat, lon = fix or (SENTINEL, SENTINEL)
             records.append(
                 (
                     START + index * 60,
@@ -488,14 +489,14 @@ class Graft(unittest.TestCase):
 
     def test_gaps_only_keeps_a_fix_that_lies_on_the_route(self):
         fixes = [None, self.points[1], None, None, None]
-        out, stats = fitroute.graft(self.ride(fixes), self.points, gaps_only=True)
+        _, stats = fitroute.graft(self.ride(fixes), self.points, gaps_only=True)
         self.assertEqual(stats['kept'], 1)
         self.assertEqual(stats['placed'], 4)
         self.assertEqual(stats['anchors'], 1)
 
     def test_gaps_only_replaces_a_fix_that_does_not(self):
         fixes = [None, (50.5, 30.5), None, None, None]
-        out, stats = fitroute.graft(self.ride(fixes), self.points, gaps_only=True)
+        _, stats = fitroute.graft(self.ride(fixes), self.points, gaps_only=True)
         self.assertEqual(stats['kept'], 0)
         self.assertEqual(stats['placed'], 5)
 
@@ -503,7 +504,7 @@ class Graft(unittest.TestCase):
         # 200 m east of the route: too far to be on it, too near to be spoofed.
         lat, lon = self.points[2]
         fixes = [None, None, (lat, lon + 0.0028), None, None]
-        out, stats = fitroute.graft(self.ride(fixes), self.points, broken_only=True)
+        _, stats = fitroute.graft(self.ride(fixes), self.points, broken_only=True)
         self.assertEqual(stats['off_route'], 1)
         self.assertEqual(stats['placed'], 4)
 
@@ -682,18 +683,17 @@ class Pace(unittest.TestCase):
         )
 
     def test_a_pace_that_ignores_heart_rate_has_no_model(self):
-        records = []
-        for index in range(300):
-            records.append(
-                (
-                    START + index,
-                    [
-                        (5, 'uint32', index * 300),
-                        (73, 'uint32', 3000),
-                        (3, 'uint8', 120 + index % 40),
-                    ],
-                )
+        records = [
+            (
+                START + index,
+                [
+                    (5, 'uint32', index * 300),
+                    (73, 'uint32', 3000),
+                    (3, 'uint8', 120 + index % 40),
+                ],
             )
+            for index in range(300)
+        ]
         with self.assertRaisesRegex(ValueError, 'heart rate'):
             fitpace.pace(activity(records), 500.0, 1200.0)
 

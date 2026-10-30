@@ -264,7 +264,8 @@ def put(out, fields, number, value):
 
 
 def minutes(seconds_per_km):
-    return '%d:%02d/km' % divmod(round(seconds_per_km), 60)
+    mins, secs = divmod(round(seconds_per_km), 60)
+    return f'{mins}:{secs:02d}/km'
 
 
 def main():

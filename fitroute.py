@@ -241,13 +241,14 @@ def retime(times, distances, limit):
     jumps = []
     dropped = 0.0
     for index, (seconds, metres) in enumerate(deltas, start=1):
+        step = metres
         if seconds <= 0:
-            metres = 0.0
+            step = 0.0
         elif not 0 <= metres <= limit * seconds:
             dropped += metres - median * seconds
-            metres = median * seconds
+            step = median * seconds
             jumps.append(index)
-        rebuilt.append(rebuilt[-1] + metres)
+        rebuilt.append(rebuilt[-1] + step)
     return rebuilt, jumps, dropped
 
 
@@ -539,7 +540,7 @@ def match(
             for ride, route in anchors
             if 0 < ride < ride_length and 0 < route < route_length
         ]
-        anchors = [(0.0, 0.0)] + inside + [(ride_length, route_length)]
+        anchors = [(0.0, 0.0), *inside, (ride_length, route_length)]
     elif not anchors:
         anchors = [(0.0, 0.0)]
 

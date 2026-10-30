@@ -79,7 +79,7 @@ def parse_datetime(text):
     try:
         return datetime.datetime.fromisoformat(text.strip().replace('/', '-'))
     except ValueError:
-        raise argparse.ArgumentTypeError(f'not an ISO date-time: {text}')
+        raise argparse.ArgumentTypeError(f'not an ISO date-time: {text}') from None
 
 
 def walk(data, visit, on_message=None):

@@ -8,9 +8,9 @@ lap and session summaries.
 import argparse
 import sys
 
+from fit_tool.definition_message import DefinitionMessage
 from fit_tool.fit_file import FitFile
 from fit_tool.fit_file_builder import FitFileBuilder
-from fit_tool.definition_message import DefinitionMessage
 from fit_tool.profile.messages.record_message import (
     RecordPositionLatField,
     RecordPositionLongField,
