@@ -113,6 +113,45 @@ meets a placed one the track jumps back onto the route, because the path
 between them was never recorded. A spoofer that puts its fixes within 2 km of
 the route will pass as real; use `--gaps-only` for that.
 
+### When the route is one lap of several
+
+    python fitroute.py BASE.fit ROUTE.gpx --laps 2 -o OUT.fit
+
+A route drawn as a loop is one lap, and a run of several laps covers that
+route again each time round. `--laps N` repeats it N times before matching,
+so the ride's distance maps onto the whole run instead of being squeezed into
+one lap. The join is the loop's closing point next to its start, which is
+where the runner was. A route that is not a loop would teleport back to the
+start there, so repeating is opt-in.
+
+### When the distance is jammed too
+
+    python fitroute.py BASE.fit ROUTE.gpx --broken-only --max-speed 20 -o OUT.fit
+
+A ride with a wheel sensor keeps its distance through jamming, which is what
+makes distance worth matching on. A watch with nothing but the GPS integrates
+the jumps it is fed: on one two-lap trail run, 210 seconds of spoofing added
+8 km that was never run, and the odometer that should place the rest of the
+run was useless.
+
+    route     388 points, 10.236 km, 2 laps
+    ride      3781 records, 9.737 km
+    pace      8.052 km of inflated distance dropped from 135 records
+    scale     1.05123
+    kept      1266 fixes on the route, 1230 anchors
+    placed    2515
+
+`--max-speed` is the fastest the activity could plausibly have gone, in km/h.
+A second that advances faster than that was not run, so it is replaced by the
+median speed of the seconds that could have been — the pace the watch
+recorded, used only where it is a pace and not a jump. The records after the
+jamming then keep their place in the run instead of being pushed kilometres
+along the route.
+
+Only the axis the match runs on changes. `record.distance` in the output is
+still what the watch recorded, because this tool writes positions and nothing
+else; `fitpace.py` is where a distance stream gets rewritten.
+
 ### When the hills say where the ride was
 
     python fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills -o OUT.fit
