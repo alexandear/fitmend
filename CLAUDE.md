@@ -4,31 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Four standalone CLI scripts, run directly. There is no package, build step or
-linter.
+Four standalone CLI scripts, run with `uv`. The project is a uv virtual
+project (`package = false`): there is no package, build step or linter.
 
 ```sh
-python fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
-python fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--laps N] [--rebuild] [--gaps-only] [--broken-only] [--hills] [--max-speed KMH] [-n]
-python fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH) [--laps N] -o OUT.fit [-n]
-python fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
+uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
+uv run fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--laps N] [--rebuild] [--gaps-only] [--broken-only] [--hills] [--max-speed KMH] [-n]
+uv run fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH) [--laps N] -o OUT.fit [-n]
+uv run fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
 ```
 
-`fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only. `fitgraft.py` and
-`fitroute.py --rebuild` need `fit-tool`, which is not installed in the working
-environment — create a virtualenv first and verify any change to those paths in it:
+`fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only.
+`fitgraft.py` and `fitroute.py --rebuild` need `fit-tool`, which is the
+`rebuild` extra rather than a dependency — pass `--extra rebuild` to `uv run`
+when verifying a change to those two paths, as the lines above do. `uv`
+creates and updates `.venv` itself; never `pip install` into it, and add a
+dependency with `uv add` so `uv.lock` stays in step.
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install fit-tool
-```
-
-Never `pip install` outside the virtualenv.
-
-```sh
-python3 -m unittest          # the whole suite
-python3 -m unittest -v test_fitmend.Retime
+uv run python -m unittest          # the whole suite
+uv run python -m unittest -v test_fitmend.Retime
 ```
 
 `test_fitmend.py` covers the library half of `fitshift.py`, `fitroute.py` and

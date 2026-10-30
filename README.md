@@ -5,13 +5,20 @@ activity alone.
 
 ## Requirements
 
-Python 3 and nothing else for `fitshift.py` and for `fitroute.py`'s default
-path. `fitgraft.py` and `fitroute.py --rebuild` need `fit-tool`; install it into
-a virtualenv rather than system Python:
+[uv](https://docs.astral.sh/uv/) and nothing else. It reads `pyproject.toml`,
+creates `.venv` on the first `uv run` and keeps it in step with `uv.lock`;
+there is no install step.
 
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install fit-tool
+`fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only,
+so plain `uv run` is enough:
+
+    uv run fitshift.py IN.fit -n --by 1d
+
+`fitgraft.py` and `fitroute.py --rebuild` are the two paths that re-encode and
+need `fit-tool`. It is the `rebuild` extra rather than a dependency, so the
+stdlib-only paths stay that way:
+
+    uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit
 
 ## fitgraft.py — graft GPS positions from one FIT file onto another
 
@@ -21,7 +28,7 @@ fine. Existing repair tools rebuild the track by interpolating between fixes
 and overwrite the speed stream with the result. This one only touches
 `position_lat` and `position_long`.
 
-    python fitgraft.py BASE.fit DONOR.fit -o OUT.fit
+    uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit
 
 `BASE` supplies everything: speed, distance, power, heart rate, cadence,
 altitude, laps and session totals. `DONOR` supplies only coordinates, matched
@@ -38,8 +45,8 @@ has no `<time>` on its track points, so `fitgraft.py` has nothing to match on.
 What both files share is distance travelled: each record is placed at its own
 odometer reading along the route. No dependencies.
 
-    python fitroute.py BASE.fit ROUTE.gpx -o OUT.fit
-    python fitroute.py BASE.fit ROUTE.gpx -n
+    uv run fitroute.py BASE.fit ROUTE.gpx -o OUT.fit
+    uv run fitroute.py BASE.fit ROUTE.gpx -n
 
 `--reverse` if the ride went round the route the other way. `-n`/`--dry-run`
 reports the match without writing.
@@ -61,7 +68,7 @@ so a traffic light reads as a stationary rider rather than a gap.
 
 ### When part of the ride's GPS is good
 
-    python fitroute.py BASE.fit ROUTE.gpx --gaps-only -o OUT.fit
+    uv run fitroute.py BASE.fit ROUTE.gpx --gaps-only -o OUT.fit
 
 A ride that ran into jamming halfway through has real fixes up to that point,
 and they beat any route. `--gaps-only` keeps every fix that lies within 25 m
@@ -93,7 +100,7 @@ last fix would trust those finishing fixes as the first kilometre.
 
 ### When the real GPS leaves the route
 
-    python fitroute.py BASE.fit ROUTE.gpx --broken-only -o OUT.fit
+    uv run fitroute.py BASE.fit ROUTE.gpx --broken-only -o OUT.fit
 
 `--gaps-only` decides by distance to the route, so it also replaces real
 fixes that are more than 25 m off it: a detour, a road beside the one drawn,
@@ -115,7 +122,7 @@ the route will pass as real; use `--gaps-only` for that.
 
 ### When the route is one lap of several
 
-    python fitroute.py BASE.fit ROUTE.gpx --laps 2 -o OUT.fit
+    uv run fitroute.py BASE.fit ROUTE.gpx --laps 2 -o OUT.fit
 
 A route drawn as a loop is one lap, and a run of several laps covers that
 route again each time round. `--laps N` repeats it N times before matching,
@@ -126,7 +133,7 @@ start there, so repeating is opt-in.
 
 ### When the distance is jammed too
 
-    python fitroute.py BASE.fit ROUTE.gpx --broken-only --max-speed 20 -o OUT.fit
+    uv run fitroute.py BASE.fit ROUTE.gpx --broken-only --max-speed 20 -o OUT.fit
 
 A ride with a wheel sensor keeps its distance through jamming, which is what
 makes distance worth matching on. A watch with nothing but the GPS integrates
@@ -156,7 +163,7 @@ else. For the activity to report the distance it covered as well, run
 
 ### When the hills say where the ride was
 
-    python fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills -o OUT.fit
+    uv run fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills -o OUT.fit
 
 Between trusted fixes the match is distance alone, with nothing to correct
 it. The barometric altitude can: if the recording's climbs sit consistently
@@ -188,7 +195,7 @@ A watch that recorded with the GPS off wrote no `position_lat`/`position_long`
 in its records, so there are no bytes to patch and `placed` comes back 0. Those
 records only get a position if the file is decoded and encoded again.
 
-    python fitroute.py BASE.fit ROUTE.gpx --rebuild -o OUT.fit
+    uv run --extra rebuild fitroute.py BASE.fit ROUTE.gpx --rebuild -o OUT.fit
 
 `--rebuild` is opt-in because it gives up what the in-place path protects: the
 output is what `fit_tool` understood of the input, not the input's own bytes.
@@ -196,7 +203,7 @@ Everything else about the match is the same, including `--gaps-only` and
 `--hills`, for a file whose GPS dropped out mid-ride and wrote stretches of
 records without the field:
 
-    python fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills --rebuild -o OUT.fit
+    uv run --extra rebuild fitroute.py BASE.fit ROUTE.gpx --gaps-only --hills --rebuild -o OUT.fit
 
 The match is still made on the file's own bytes and paired with `fit_tool`'s
 decode record by record; if the two disagree on the record count the file is
@@ -235,8 +242,8 @@ sets the length, so the run finishes where it finished. Positions are left to
 
 Up to `--keep` km nothing changes. From there, pace follows heart rate.
 
-    python fitpace.py BASE.fit ROUTE.gpx --keep 6 -o PACED.fit
-    python fitroute.py PACED.fit ROUTE.gpx --rebuild -o OUT.fit
+    uv run fitpace.py BASE.fit ROUTE.gpx --keep 6 -o PACED.fit
+    uv run --extra rebuild fitroute.py PACED.fit ROUTE.gpx --rebuild -o OUT.fit
 
     route     9.446 km
     kept      6.000 km in 29:55, 4:59/km
@@ -258,8 +265,8 @@ second whose pace a runner could have run and replaces only the jumps with
 the median of those seconds, then stretches what follows the first jump onto
 the route's length.
 
-    python fitpace.py BASE.fit ROUTE.gpx --max-speed 20 --laps 2 -o PACED.fit
-    python fitroute.py PACED.fit ROUTE.gpx --laps 2 --broken-only --rebuild -o OUT.fit
+    uv run fitpace.py BASE.fit ROUTE.gpx --max-speed 20 --laps 2 -o PACED.fit
+    uv run --extra rebuild fitroute.py PACED.fit ROUTE.gpx --laps 2 --broken-only --rebuild -o OUT.fit
 
 On one two-lap trail run the watch recorded a believable pace for all but
 210 seconds of spoofing, which added 8 km it never ran:
@@ -287,9 +294,9 @@ cadence, altitude and timestamps, is left as recorded.
 For a ride recorded with the watch on the wrong date, or one that needs to
 land on the day it was actually ridden. No dependencies.
 
-    python fitshift.py IN.fit -o OUT.fit --to '2026-09-30 07:16'
-    python fitshift.py IN.fit -o OUT.fit --by 1d
-    python fitshift.py IN.fit -n --by -2h30m
+    uv run fitshift.py IN.fit -o OUT.fit --to '2026-09-30 07:16'
+    uv run fitshift.py IN.fit -o OUT.fit --by 1d
+    uv run fitshift.py IN.fit -n --by -2h30m
 
 `--to` sets the start; `--by` shifts by a duration (`90`, `1d`, `2h30m`,
 `-45m`, `+1d4h`). `-n`/`--dry-run` prints the old and new span without
@@ -303,7 +310,7 @@ instead.
 
 ### Trust the file's offset only as far as you trust the watch
 
-    python fitshift.py IN.fit -o OUT.fit --to '2026-09-30 07:16' --zone +3
+    uv run fitshift.py IN.fit -o OUT.fit --to '2026-09-30 07:16' --zone +3
 
 `--zone` reads `--to` as a time in that UTC offset and writes the offset back
 into `activity.local_timestamp`, so the file agrees with where the ride
@@ -358,7 +365,7 @@ it does not, a record was misread and the file is not written.
 
 ## Tests
 
-    python3 -m unittest
+    uv run python -m unittest
 
 Each test builds the FIT bytes it needs, so the suite needs no sample activity
 and no `fit-tool`. It covers the library half of the three stdlib-only tools:

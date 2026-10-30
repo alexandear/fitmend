@@ -1,0 +1,15 @@
+[project]
+name = "fitmend"
+version = "0.1.0"
+description = "Small tools that repair one thing in a FIT file and leave the rest of the activity alone."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = []
+
+# fitgraft.py and fitroute.py --rebuild are the only paths that re-encode.
+[project.optional-dependencies]
+rebuild = ["fit-tool>=0.9.16"]
+
+[tool.uv]
+package = false

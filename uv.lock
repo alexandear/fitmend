@@ -1,0 +1,26 @@
+version = 1
+revision = 5
+requires-python = ">=3.9"
+
+[[package]]
+name = "fit-tool"
+version = "0.9.17"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/f6/5a41ad7398afffa5aa7798d654d16045ebde739bfae5d2bbe6f74a8d3800/fit_tool-0.9.17.tar.gz", hash = "sha256:35a7d92c7b735c047ecfe189d222427076efd8935fb4465a5f1062a4bf16ecf4", size = 324106, upload-time = "2026-10-28T05:42:18.917Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/44/4b6c7383a2cd802f46c14d5754aa69a534e23e3a8e98d2c7dc59af041fad/fit_tool-0.9.17-py3-none-any.whl", hash = "sha256:c42f48dc9196ee76b63b869f398162ef5115fd0747c4e8cde177763d16338c9f", size = 526735, upload-time = "2026-10-28T05:42:17.245Z" },
+]
+
+[[package]]
+name = "fitmend"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.optional-dependencies]
+rebuild = [
+    { name = "fit-tool" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fit-tool", marker = "extra == 'rebuild'", specifier = ">=0.9.16" }]
+provides-extras = ["rebuild"]
