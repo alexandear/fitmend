@@ -199,23 +199,19 @@ def keep_real(records, points, cumulative):
     return kept
 
 
-def retime(records, limit):
-    """Rebuild the distance axis from the deltas a rider could have covered.
+def retime(times, distances, limit):
+    """Return (distances rebuilt from the deltas that are a pace, jumps, dropped).
 
-    Jamming inflates distance as well as moving the fix: a watch with no wheel
-    sensor integrates the jumps it is fed, and a minute of them adds kilometres
-    that were never run. A delta implying more than limit metres a second was
-    not ridden, so it is replaced by the median speed of the deltas that were,
-    held over the same seconds. Only the axis the placement runs on changes;
-    the distance recorded in the file is left alone.
-
-    Returns (replaced records, metres of inflation dropped).
+    Jamming inflates distance as well as moving the fix: a watch with no
+    wheel sensor or footpod integrates the jumps it is fed, and a minute of
+    them adds kilometres that were never covered. A delta implying more than
+    limit metres a second was not covered, so it takes the median speed of
+    the deltas that were, held over the same seconds. jumps are the indices
+    whose delta was replaced, dropped the inflation they carried.
     """
-    paced = [r for r in records
-             if r['distance'] is not None and r['stamp'] is not None]
-    deltas = [(second['stamp'] - first['stamp'],
-               second['distance'] - first['distance'])
-              for first, second in zip(paced, paced[1:])]
+    deltas = [(second - first, there - here)
+              for first, second, here, there
+              in zip(times, times[1:], distances, distances[1:])]
     speeds = [metres / seconds for seconds, metres in deltas
               if seconds > 0 and 0 <= metres <= limit * seconds]
     if not speeds:
@@ -223,19 +219,18 @@ def retime(records, limit):
                          'distance from')
     median = statistics.median(speeds)
 
-    distance = paced[0]['distance']
-    replaced = 0
+    rebuilt = [distances[0]]
+    jumps = []
     dropped = 0.0
-    for record, (seconds, metres) in zip(paced[1:], deltas):
+    for index, (seconds, metres) in enumerate(deltas, start=1):
         if seconds <= 0:
             metres = 0.0
         elif not 0 <= metres <= limit * seconds:
             dropped += metres - median * seconds
             metres = median * seconds
-            replaced += 1
-        distance += metres
-        record['distance'] = distance
-    return replaced, dropped
+            jumps.append(index)
+        rebuilt.append(rebuilt[-1] + metres)
+    return rebuilt, jumps, dropped
 
 
 def interpolate(anchors, distance):
@@ -455,7 +450,17 @@ def match(data, points, scale=True, gaps_only=False, elevations=None,
     route_length = cumulative[-1]
 
     records, _ = read_records(data)
-    replaced, dropped = retime(records, limit) if limit else (0, 0.0)
+    replaced, dropped = 0, 0.0
+    if limit:
+        # Only the axis the placement runs on changes; the distance recorded
+        # in the file is left alone, which is fitpace.py's to rewrite.
+        paced = [r for r in records
+                 if r['distance'] is not None and r['stamp'] is not None]
+        rebuilt, jumps, dropped = retime([r['stamp'] for r in paced],
+                                         [r['distance'] for r in paced], limit)
+        for record, distance in zip(paced, rebuilt):
+            record['distance'] = distance
+        replaced = len(jumps)
     ridden = [r for r in records if r['distance'] is not None]
     if not ridden:
         raise ValueError('no record.distance field to match on')

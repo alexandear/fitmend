@@ -150,7 +150,9 @@ along the route.
 
 Only the axis the match runs on changes. `record.distance` in the output is
 still what the watch recorded, because this tool writes positions and nothing
-else; `fitpace.py` is where a distance stream gets rewritten.
+else. For the activity to report the distance it covered as well, run
+`fitpace.py --max-speed` over it first; `fitroute.py` then needs no
+`--max-speed` of its own, because the distance it matches on is already a pace.
 
 ### When the hills say where the ride was
 
@@ -222,11 +224,16 @@ private Garmin message types in a modern FIT file never arises.
 Altitude is left alone. The barometric altimeter in the recording is better
 than a route's elevation lookup, and `<ele>` is not what you came for.
 
-## fitpace.py — pace the rest of a run from heart rate
+## fitpace.py — rebuild a run's distance
 
-For a run whose distance is right up to some point and wrong after it, such
-as a watch that ran on its accelerometer and then got spoofed. Up to `--keep`
-km nothing changes. From there, pace follows heart rate. No dependencies.
+For a run whose distance is wrong: a watch that ran on its accelerometer and
+then got spoofed, or one that measured with the jammed GPS itself. The route
+sets the length, so the run finishes where it finished. Positions are left to
+`fitroute.py`, which places each record at its new distance. No dependencies.
+
+### From heart rate, where the pace is gone
+
+Up to `--keep` km nothing changes. From there, pace follows heart rate.
 
     python fitpace.py BASE.fit ROUTE.gpx --keep 6 -o PACED.fit
     python fitroute.py PACED.fit ROUTE.gpx --rebuild -o OUT.fit
@@ -237,16 +244,43 @@ km nothing changes. From there, pace follows heart rate. No dependencies.
     modelled  3.194 km by heart rate, scaled 1.07898 to 3.446 km
     paced     912 records at 4:25/km on average
 
-The kept part supplies the model: a straight line from heart rate to speed,
+The `--keep` part supplies the model: a straight line from heart rate to speed,
 fitted after the first two minutes, because heart rate lags pace while it
 climbs. Heart rate is averaged over a minute for the same reason. The model
 sets the shape of the rest of the run. The route sets its length, so the run
 finishes on the route's finish. The ratio shows how far the model alone would
 have missed.
 
-Rewritten fields: `record.distance`, the record speed fields, and the lap and
-session total distance and average and maximum speed. Positions are left to
-`fitroute.py`, which places each record at its new distance.
+### From the recorded pace, where only the jumps are wrong
+
+Jamming does not always ruin the pace throughout. `--max-speed` keeps every
+second whose pace a runner could have run and replaces only the jumps with
+the median of those seconds, then stretches what follows the first jump onto
+the route's length.
+
+    python fitpace.py BASE.fit ROUTE.gpx --max-speed 20 --laps 2 -o PACED.fit
+    python fitroute.py PACED.fit ROUTE.gpx --laps 2 --broken-only --rebuild -o OUT.fit
+
+On one two-lap trail run the watch recorded a believable pace for all but
+210 seconds of spoofing, which added 8 km it never ran:
+
+    route     10.236 km, 2 laps
+    kept      4.633 km in 33:56, 7:19/km
+    dropped   8.052 km of inflated distance from 135 records
+    rebuilt   5.104 km from the pace that was left, scaled 1.09772 to 5.603 km
+    paced     2044 records at 6:20/km on average
+
+`--laps N` measures the route as that many laps of it, for a loop covered more
+than once. The ratio is what the rebuilt pace alone would have fallen short
+by — 10% here, from a receiver still being jammed where it was not jumping
+outright. It lands on the route's length because that is the length that was
+run; nothing else in the recording knows how far the run went.
+
+### What it rewrites
+
+`record.distance`, the record speed fields, and the lap and session total
+distance and average and maximum speed. Everything else, including heart rate,
+cadence, altitude and timestamps, is left as recorded.
 
 ## fitshift.py — move an activity in time
 

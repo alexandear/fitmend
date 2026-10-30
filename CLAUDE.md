@@ -10,7 +10,7 @@ suite or linter.
 ```sh
 python fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
 python fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--laps N] [--rebuild] [--gaps-only] [--broken-only] [--hills] [--max-speed KMH] [-n]
-python fitpace.py BASE.fit ROUTE.gpx --keep KM -o OUT.fit [-n]
+python fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH) [--laps N] -o OUT.fit [-n]
 python fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
 ```
 
@@ -55,7 +55,8 @@ alone. That constraint drives the design, so preserve it:
   record was misread, and the file is not written otherwise.
 - `crc16`, `RECORD`, and the base-type/field-number constants come from here too.
   `fitroute.py` imports `RECORD`, `crc16` and `walk`; `fitroute.rebuild` imports
-  `fitgraft.set_position`.
+  `fitgraft.set_position`; `fitpace.py` imports `measure`, `read_route` and
+  `retime` from `fitroute.py`.
 
 Correctness traps the code already handles — don't regress them:
 
@@ -77,6 +78,11 @@ Correctness traps the code already handles — don't regress them:
   `fitgraft.set_position` appends the field class, sets `growable`, and drops
   `message.definition_message` when the decoded field had size 0 — otherwise
   `fit_tool` reuses the decoded definition and never writes the new field.
+- **A watch with no wheel sensor measures distance with the jammed GPS.**
+  It integrates the jumps it is fed, so the odometer the match runs on is
+  inflated too. `fitroute.retime` rebuilds it from the deltas that are a
+  plausible pace (`--max-speed`), for placement only; `fitpace.py
+  --max-speed` is what writes that rebuild into the file.
 - **Distance matching scales.** A wheel sensor calibrated a fraction off totals
   differently than the route measures, so `fitroute` stretches ride distance onto
   route length by default. When distance stops advancing the position stops with
