@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Four standalone CLI scripts, run directly. There is no package, build step, test
-suite or linter.
+Four standalone CLI scripts, run directly. There is no package, build step or
+linter.
 
 ```sh
 python fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
@@ -25,6 +25,18 @@ pip install fit-tool
 ```
 
 Never `pip install` outside the virtualenv.
+
+```sh
+python3 -m unittest          # the whole suite
+python3 -m unittest -v test_fitmend.Retime
+```
+
+`test_fitmend.py` covers the library half of `fitshift.py`, `fitroute.py` and
+`fitpace.py`. Every test builds the FIT bytes it needs with its own `encode()`
+helper, so the suite needs neither `fit-tool` nor a file from `tracks/` (which
+is gitignored, and holds real activities that cannot go in the repo). Add
+tests there rather than reaching for a sample file; the `fitgraft.py` and
+`--rebuild` paths are the two the suite does not reach.
 
 `-n`/`--dry-run` on `fitroute.py` and `fitshift.py` reports the result without
 writing; use it against `tracks/*.fit` to check a change. `tracks/` holds real

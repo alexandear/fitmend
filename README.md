@@ -356,6 +356,18 @@ Three further guards:
 The parser must consume exactly `data_size` bytes and land on the file CRC. If
 it does not, a record was misread and the file is not written.
 
+## Tests
+
+    python3 -m unittest
+
+Each test builds the FIT bytes it needs, so the suite needs no sample activity
+and no `fit-tool`. It covers the library half of the three stdlib-only tools:
+the parser and the shift, the route geometry and the match, the distance
+rebuild, and the correctness traps each of them exists to avoid — a private
+field 253 that is a counter rather than a date, the invalid sentinels for a
+date and for a position, a record written with no position field, and a route
+that passes the same point twice.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
