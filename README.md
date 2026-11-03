@@ -10,8 +10,8 @@ creates `.venv` on the first `uv run` and keeps it in step with `uv.lock`;
 there is no install step. Python 3.15 is the floor, and uv fetches it itself
 if the machine has no Python that new.
 
-`fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only,
-so plain `uv run` is enough:
+`fitshift.py`, `fitpace.py`, `fitstop.py` and `fitroute.py`'s default path are
+stdlib-only, so plain `uv run` is enough:
 
     uv run fitshift.py IN.fit -n --by 1d
 
@@ -290,6 +290,61 @@ run; nothing else in the recording knows how far the run went.
 distance and average and maximum speed. Everything else, including heart rate,
 cadence, altitude and timestamps, is left as recorded.
 
+## fitstop.py — drop the distance gained while standing still
+
+For a run whose odometer is right except across a stop. A watch that loses its
+fix and auto-pauses re-acquires when the wearer moves off again, and charges
+the whole re-acquisition jump to the few seconds after the pause: hundreds of
+metres in a handful of records, at a speed no runner holds. No dependencies.
+
+    uv run fitstop.py BASE.fit ROUTE.gpx -o STOPPED.fit
+    uv run --extra rebuild fitroute.py STOPPED.fit ROUTE.gpx --rebuild -o OUT.fit
+
+On an 11.217 km trail run whose route measures 10.777 km:
+
+    ride      3573 records, 11.217 km
+    stop      at 4:46, 88 s, dropped 390.3 m, heart rate 79
+    dropped   0.390 km never covered, leaving 10.827 km
+    route     10.777 km
+    scale     0.99540
+    pace      5:32/km -> 5:45/km by elapsed time
+
+One stop accounts for 390 of the 440 m the watch was over. Heart rate had
+fallen from 121 to 79 and stayed there through the jump, which is not a pace
+but a wearer standing still, so those metres were never covered and are
+removed rather than re-paced. The 50 m left over is the odometer's own
+calibration error, and the run is scaled onto the route for it — a fifth of a
+per cent, against the four per cent a uniform scale of the whole file would
+have had to charge every kilometre of a pace that was right.
+
+### Why not `fitpace.py --max-speed`
+
+It finds the same jump and makes the opposite choice: it replaces the jump
+with the median of the seconds that are a pace, keeping ground the wearer
+never ran, and then stretches the rest of the run to fit the route's length.
+That is the right choice for a jammed receiver, where the jumps replace real
+movement. It is the wrong one for a pause, where there was no movement to
+replace.
+
+### A pause is a stop only when a jump follows it
+
+A watch that drops samples while the wearer keeps running leaves a gap too,
+and goes on measuring across it — that distance is real. So a gap longer than
+`--gap` seconds is read as a stop only when the records after it jump faster
+than `--max-speed`, and the metres removed are the ones the odometer gained
+between the last record before the gap and the last record of the jump. Both
+committed sample files are left alone for this reason, and `test_tracks.py`
+holds them that way: one pauses four times without inventing anything, the
+other jumps 92 times with no pause behind any of them.
+
+### What it rewrites
+
+`record.distance`, the record speed fields, and the lap and session total
+distance and average and maximum speed; the speed of a record that stood still
+becomes zero. Timestamps are untouched, so the stop stays a stop and the run
+keeps its own clock. Positions are `fitroute.py`'s job. Without a route
+argument the invented distance is dropped and nothing is scaled.
+
 ## fitshift.py — move an activity in time
 
 For a ride recorded with the watch on the wrong date, or one that needs to
@@ -372,7 +427,8 @@ it does not, a record was misread and the file is not written.
 `test_fitmend.py` builds the FIT bytes of every case it covers, so it needs no
 sample activity and no `fit-tool`. It covers the library half of the three
 stdlib-only tools: the parser and the shift, the route geometry and the match,
-the distance rebuild, and the correctness traps each of them exists to avoid —
+the distance rebuild, the stop repair, and the correctness traps each of them
+exists to avoid —
 a private field 253 that is a counter rather than a date, the invalid
 sentinels for a date and for a position, a record written with no position
 field, a compressed-timestamp header and a developer field, a route that
@@ -388,12 +444,16 @@ one covered:
   of private Garmin message types, 162 of its 2708 records carrying a position
   field at all, the 94 fixes among those spoofed to another continent, 19 of
   its date fields holding the invalid sentinel, and 16.605 km of odometer
-  integrated out of the jumps for a run of 9.446 km.
+  integrated out of the jumps for a run of 9.446 km. It never stops recording,
+  which is what makes it the file that proves `fitstop.py` keeps its hands off
+  a jammed run.
 - `Lunch_Run.fit` with `13.10.2026.gpx`, a run recorded with the GPS off. Not
   one of its 2517 records carries a position field, so only the re-encoding
   path can give it a position at all, and it is where `--rebuild` and
   `fitgraft.py` are tested — the two classes that need `fit-tool`, and the
-  only ones that are skipped without it.
+  only ones that are skipped without it. It also pauses four times, including
+  once for 80 seconds, without inventing a metre across any of them, so it is
+  what `fitstop.py` has to leave alone.
 
 What those tests assert is invariants, not golden bytes: that the parse ends
 on the file CRC, that the only bytes a tool rewrote belong to the fields it

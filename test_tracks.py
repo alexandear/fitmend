@@ -33,6 +33,7 @@ from itertools import pairwise
 import fitpace
 import fitroute
 import fitshift
+import fitstop
 
 TESTDATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'testdata')
 
@@ -349,6 +350,43 @@ class Pace(unittest.TestCase):
             self.assertLessEqual(first, second)
             if stamp2 > stamp1:
                 self.assertLessEqual(second - first, LIMIT * (stamp2 - stamp1))
+
+
+class Destop(unittest.TestCase):
+    """A pause is a stop only when a jump follows it.
+
+    Neither committed file has distance to drop, which is the case worth
+    holding: one of them pauses four times and the other jumps 92 times,
+    and this tool has to keep its hands off both. The run it was written
+    for stays out of the repo, so the repair itself is covered in
+    test_fitmend.Destop, over bytes.
+    """
+
+    def test_pauses_the_watch_was_honest_about_are_left_alone(self):
+        data = read(BLIND)
+        *_, times, distances, _, _ = fitstop.read_run(data)
+        pauses = [
+            second - first
+            for first, second in pairwise(times)
+            if second - first > fitstop.STOP
+        ]
+        self.assertEqual(pauses, [42, 19, 80, 42])
+        self.assertEqual(fitstop.stops(times, distances), [])
+        with self.assertRaisesRegex(ValueError, 'no pause'):
+            fitstop.destop(data)
+
+    def test_a_jammed_run_s_jumps_are_not_behind_a_pause(self):
+        data = read(JAMMED)
+        *_, times, distances, _, _ = fitstop.read_run(data)
+        # Its 92 jumps are fitpace.unjam's: the watch never stopped recording,
+        # so there is no pause for one of them to hide behind.
+        self.assertEqual(
+            [second - first for first, second in pairwise(times)],
+            [1] * (len(times) - 1),
+        )
+        self.assertEqual(fitstop.stops(times, distances), [])
+        with self.assertRaisesRegex(ValueError, 'no pause'):
+            fitstop.destop(data)
 
 
 @unittest.skipUnless(FIT_TOOL, 'fit-tool is the rebuild extra, not a dependency')

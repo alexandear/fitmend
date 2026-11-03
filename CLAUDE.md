@@ -4,18 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Four standalone CLI scripts, run with `uv`. The project is a uv virtual
+Five standalone CLI scripts, run with `uv`. The project is a uv virtual
 project (`package = false`): there is no package and no build step.
 
 ```sh
 uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
 uv run fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--laps N] [--rebuild] [--gaps-only] [--broken-only] [--hills] [--max-speed KMH] [-n]
 uv run fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH) [--laps N] -o OUT.fit [-n]
+uv run fitstop.py BASE.fit [ROUTE.gpx] -o OUT.fit [--gap S] [--max-speed KMH] [--laps N] [-n]
 uv run fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
 ```
 
-`fitshift.py`, `fitpace.py` and `fitroute.py`'s default path are stdlib-only.
-`fitgraft.py` and `fitroute.py --rebuild` need `fit-tool`, which is the
+`fitshift.py`, `fitpace.py`, `fitstop.py` and `fitroute.py`'s default path
+are stdlib-only. `fitgraft.py` and `fitroute.py --rebuild` need `fit-tool`,
+which is the
 `rebuild` extra rather than a dependency — pass `--extra rebuild` to `uv run`
 when verifying a change to those two paths, as the lines above do. `uv`
 creates and updates `.venv` itself; never `pip install` into it, and add a
@@ -29,11 +31,11 @@ uv run python -m unittest -v test_fitmend.Retime
 
 The suite is two modules.
 
-`test_fitmend.py` covers the library half of `fitshift.py`, `fitroute.py` and
-`fitpace.py`. Every test builds the FIT bytes it needs with its own `encode()`
-helper, so it needs neither `fit-tool` nor a sample file. Add a test here
-whenever the case can be written as bytes: it is the fast half of the suite
-and it states on the page the case it covers.
+`test_fitmend.py` covers the library half of `fitshift.py`, `fitroute.py`,
+`fitpace.py` and `fitstop.py`. Every test builds the FIT bytes it needs with
+its own `encode()` helper, so it needs neither `fit-tool` nor a sample file.
+Add a test here whenever the case can be written as bytes: it is the fast half
+of the suite and it states on the page the case it covers.
 
 `test_tracks.py` runs the same library halves over the four real files in
 `testdata/`, which are committed so that the suite can show the tools read
@@ -45,13 +47,16 @@ moved and what did not, that placed fixes land on the route, that the parse
 still ends on the file CRC — so a deliberate change does not rewrite them.
 `test_tracks.Rebuild` and `test_tracks.Valid` are the classes that cover
 `fitgraft.py` and `fitroute.py --rebuild`; both are skipped unless `fit-tool`
-is installed.
+is installed. `test_tracks.Destop` is the other way round: neither committed
+file has a stop to repair, and it holds them that way, since the run
+`fitstop.py` was written for stays out of the repo.
 
 `tracks/` is gitignored and holds the rest of the real activities, which stay
 out of the repo.
 
-`-n`/`--dry-run` on `fitroute.py` and `fitshift.py` reports the result without
-writing; use it against `tracks/*.fit` or `testdata/*.fit` to check a change.
+`-n`/`--dry-run` on `fitroute.py`, `fitstop.py` and `fitshift.py` reports the
+result without writing; use it against `tracks/*.fit` or `testdata/*.fit` to
+check a change.
 `tracks/` holds real sample activities (`Lunch_Ride.fit`, `Morning_Run.fit`, a
 `09.10.2026.gpx` route) alongside already-produced outputs.
 
@@ -87,8 +92,8 @@ Each tool repairs exactly one thing in a FIT file and leaves everything else
 alone. That constraint drives the design, so preserve it:
 
 - **Two layers per tool.** A library half (`graft`, `shift`, `survey`, `rebuild`,
-  `read_route`) takes and returns bytes or plain dicts; a `main()` does argparse,
-  printing and file I/O. Keep new logic in the library half.
+  `read_route`, `destop`) takes and returns bytes or plain dicts; a `main()` does
+  argparse, printing and file I/O. Keep new logic in the library half.
 - **In-place byte patching is the default; re-encoding is opt-in.** `fitshift.py`
   and `fitroute.py` parse the FIT binary themselves and overwrite only the fields
   they own, then recompute the trailing file CRC. A decode/re-encode round-trip
@@ -106,7 +111,9 @@ alone. That constraint drives the design, so preserve it:
 - `crc16`, `RECORD`, and the base-type/field-number constants come from here too.
   `fitroute.py` imports `RECORD`, `crc16` and `walk`; `fitroute.rebuild` imports
   `fitgraft.set_position`; `fitpace.py` imports `measure`, `read_route` and
-  `retime` from `fitroute.py`.
+  `retime` from `fitroute.py`; `fitstop.py` imports `measure` and `read_route`
+  from `fitroute.py` and `read_messages`, `rewrite` and `minutes` from
+  `fitpace.py`, so the lap and session totals move one way only.
 
 Correctness traps the code already handles — don't regress them:
 
@@ -128,6 +135,14 @@ Correctness traps the code already handles — don't regress them:
   `fitgraft.set_position` appends the field class, sets `growable`, and drops
   `message.definition_message` when the decoded field had size 0 — otherwise
   `fit_tool` reuses the decoded definition and never writes the new field.
+- **Distance credited across a pause was never covered.** A watch that
+  auto-pauses on a lost fix charges the whole re-acquisition jump to the few
+  seconds after it, and heart rate falling to rest through those seconds is the
+  proof. `fitstop.py` removes those metres rather than re-pacing them, which is
+  the opposite of what `fitpace.py --max-speed` does to the same shape of jump
+  — right for a jammed receiver, wrong for a stop. A gap counts as a stop only
+  when a jump follows it: a watch that drops samples while the wearer runs
+  keeps measuring, and that distance is real.
 - **A watch with no wheel sensor measures distance with the jammed GPS.**
   It integrates the jumps it is fed, so the odometer the match runs on is
   inflated too. `fitroute.retime` rebuilds it from the deltas that are a

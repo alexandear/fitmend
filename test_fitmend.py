@@ -14,6 +14,7 @@ import unittest
 import fitpace
 import fitroute
 import fitshift
+import fitstop
 
 # (base type byte, size, struct code) per field type a test may write.
 BASE = {
@@ -986,6 +987,167 @@ class Pace(unittest.TestCase):
     def test_a_run_that_never_reaches_keep(self):
         with self.assertRaisesRegex(ValueError, 'never gets past'):
             fitpace.pace(self.ride(), 100000.0, 200000.0)
+
+
+class Stops(unittest.TestCase):
+    """Which pauses invented distance, read off the times and the odometer."""
+
+    def test_a_pause_followed_by_a_jump_is_a_stop(self):
+        times = [0, 1, 2, 90, 91, 92, 93]
+        distances = [0.0, 3.0, 6.0, 56.0, 116.0, 176.0, 179.0]
+        # The window runs from the last record before the pause to the last
+        # record of the jump, so it owns every metre the two invented.
+        self.assertEqual(fitstop.stops(times, distances), [(2, 5)])
+
+    def test_a_pause_the_watch_measured_across_is_left_alone(self):
+        # No jump follows, so the watch kept measuring and the distance is real.
+        times = [0, 1, 2, 90, 91, 92]
+        distances = [0.0, 3.0, 6.0, 270.0, 273.0, 276.0]
+        self.assertEqual(fitstop.stops(times, distances), [])
+
+    def test_a_jump_without_a_pause_before_it_is_not_this_tool_s(self):
+        times = list(range(6))
+        distances = [0.0, 3.0, 6.0, 106.0, 109.0, 112.0]
+        self.assertEqual(fitstop.stops(times, distances), [])
+
+    def test_a_silence_shorter_than_the_gap_is_a_dropped_sample(self):
+        times = [0, 1, 2, 5, 6, 7]
+        distances = [0.0, 3.0, 6.0, 56.0, 116.0, 119.0]
+        self.assertEqual(fitstop.stops(times, distances, gap=10), [])
+
+    def test_a_pause_that_gained_nothing_is_left_alone(self):
+        times = [0, 1, 2, 90, 91, 92]
+        distances = [0.0, 3.0, 6.0, 6.0, 9.0, 12.0]
+        self.assertEqual(fitstop.stops(times, distances), [])
+
+    def test_every_stop_is_found(self):
+        times = [0, 1, 90, 91, 92, 200, 201, 202]
+        distances = [0.0, 3.0, 50.0, 110.0, 113.0, 160.0, 220.0, 223.0]
+        self.assertEqual(fitstop.stops(times, distances), [(1, 3), (4, 6)])
+
+
+class Destop(unittest.TestCase):
+    """The distance stream with the standing-still metres taken out."""
+
+    def run_with_a_stop(self, speed=3.0):
+        """Three seconds of running, an 80 s stop, a jump, three more."""
+        times = [0, 1, 2, 82, 83, 84, 85, 86]
+        distances = [0.0, 3.0, 6.0, 56.0, 116.0, 176.0, 179.0, 182.0]
+        records = [
+            (
+                START + stamp,
+                [
+                    (5, 'uint32', round(distance * 100)),
+                    (73, 'uint32', round(speed * 1000)),
+                    (3, 'uint8', 80 if 2 < index < 6 else 140),
+                ],
+            )
+            for index, (stamp, distance) in enumerate(
+                zip(times, distances, strict=True)
+            )
+        ]
+        return activity(records)
+
+    def distances(self, data):
+        records, _ = fitroute.read_records(data)
+        return [r['distance'] for r in records]
+
+    def speeds(self, data):
+        messages, _ = fitpace.read_messages(data)
+        return [
+            fields[73][0] / 1000.0
+            for number, fields in messages
+            if number == fitshift.RECORD
+        ]
+
+    def test_the_invented_distance_goes_and_the_rest_stands(self):
+        out, stats = fitstop.destop(self.run_with_a_stop())
+        self.assertAlmostEqual(stats['dropped'], 170.0)
+        self.assertAlmostEqual(stats['ratio'], 1.0)
+        # 6 m at the stop, then the two real strides after the jump.
+        self.assertEqual(self.distances(out), [0, 3, 6, 6, 6, 6, 9, 12])
+
+    def test_the_speed_of_a_record_that_stood_still_is_zero(self):
+        out, _ = fitstop.destop(self.run_with_a_stop())
+        self.assertEqual(self.speeds(out), [3.0, 3.0, 3.0, 0.0, 0.0, 0.0, 3.0, 3.0])
+
+    def test_the_heart_rate_that_proves_it_is_reported(self):
+        _, stats = fitstop.destop(self.run_with_a_stop())
+        self.assertEqual(len(stats['windows']), 1)
+        window = stats['windows'][0]
+        self.assertEqual(window['heart'], 80)
+        self.assertEqual(window['at'], 2)
+        self.assertEqual(window['span'], 82)
+
+    def test_what_is_left_over_is_scaled_onto_the_route(self):
+        out, stats = fitstop.destop(self.run_with_a_stop(), 24.0)
+        self.assertAlmostEqual(stats['kept'], 12.0)
+        self.assertAlmostEqual(stats['ratio'], 2.0)
+        self.assertEqual(self.distances(out), [0, 6, 12, 12, 12, 12, 18, 24])
+
+    def test_the_scale_reaches_the_speed_fields_too(self):
+        out, _ = fitstop.destop(self.run_with_a_stop(), 24.0)
+        self.assertEqual(self.speeds(out), [6.0, 6.0, 6.0, 0.0, 0.0, 0.0, 6.0, 6.0])
+
+    def test_the_last_record_lands_exactly_on_the_route(self):
+        out, _ = fitstop.destop(self.run_with_a_stop(), 1234.5)
+        self.assertAlmostEqual(self.distances(out)[-1], 1234.5, places=1)
+
+    def test_the_lap_and_session_totals_follow(self):
+        out, _ = fitstop.destop(self.run_with_a_stop(), 24.0)
+        messages, _ = fitpace.read_messages(out)
+        for number, fields in messages:
+            if number in (fitpace.SESSION, fitpace.LAP):
+                self.assertAlmostEqual(fields[9][0] / 100.0, 24.0, places=1)
+
+    def test_the_parse_still_ends_on_the_file_crc(self):
+        out, _ = fitstop.destop(self.run_with_a_stop(), 24.0)
+        end = fitshift.walk(out, lambda *args: None, lambda *args: None)
+        self.assertEqual(end, len(out) - 2)
+        self.assertEqual(struct.unpack('<H', out[end:])[0], fitshift.crc16(out[:end]))
+
+    def test_a_run_without_a_stop_is_refused(self):
+        records = [
+            (START + index, [(5, 'uint32', index * 300), (73, 'uint32', 3000)])
+            for index in range(10)
+        ]
+        with self.assertRaisesRegex(ValueError, 'no pause'):
+            fitstop.destop(activity(records))
+
+    def test_a_run_without_distance_is_refused(self):
+        records = [(START + index, [(3, 'uint8', 140)]) for index in range(10)]
+        with self.assertRaisesRegex(ValueError, 'no records with a timestamp'):
+            fitstop.destop(activity(records))
+
+    def test_a_run_that_was_all_stop_is_refused(self):
+        # Nothing is left to scale onto the route, so the file is not written.
+        times = [0, 82, 83, 84]
+        distances = [0.0, 56.0, 116.0, 176.0]
+        records = [
+            (START + stamp, [(5, 'uint32', round(distance * 100))])
+            for stamp, distance in zip(times, distances, strict=True)
+        ]
+        with self.assertRaisesRegex(ValueError, 'every metre'):
+            fitstop.destop(activity(records), 1000.0)
+
+    def test_a_route_with_no_length_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'no length'):
+            fitstop.destop(self.run_with_a_stop(), 0.0)
+
+    def test_a_jump_slower_than_the_limit_is_a_stride(self):
+        with self.assertRaisesRegex(ValueError, 'no pause'):
+            fitstop.destop(self.run_with_a_stop(), limit=100.0)
+
+    def test_a_run_without_heart_rate_still_reports_its_stop(self):
+        times = [0, 1, 2, 82, 83, 84]
+        distances = [0.0, 3.0, 6.0, 56.0, 116.0, 119.0]
+        records = [
+            (START + stamp, [(5, 'uint32', round(distance * 100))])
+            for stamp, distance in zip(times, distances, strict=True)
+        ]
+        _, stats = fitstop.destop(activity(records))
+        self.assertIsNone(stats['windows'][0]['heart'])
+        self.assertAlmostEqual(stats['dropped'], 110.0)
 
 
 class Put(unittest.TestCase):
