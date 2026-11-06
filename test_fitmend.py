@@ -912,6 +912,78 @@ class Unjam(unittest.TestCase):
         self.assertEqual(struct.unpack('<H', out[end:])[0], fitshift.crc16(out[:end]))
 
 
+class Rescale(unittest.TestCase):
+    """The whole distance stream scaled onto the route's length."""
+
+    def ride(self, distances, speed=3.0):
+        records = [
+            (
+                START + index,
+                [
+                    (5, 'uint32', round(distance * 100)),
+                    (73, 'uint32', round(speed * 1000)),
+                    (6, 'uint16', round(speed * 1000)),
+                ],
+            )
+            for index, distance in enumerate(distances)
+        ]
+        return activity(records)
+
+    def test_the_run_lands_on_the_route(self):
+        out, stats = fitpace.rescale(self.ride([0, 3, 6, 9, 12]), 6.0)
+        self.assertAlmostEqual(stats['ratio'], 0.5)
+        records, _ = fitroute.read_records(out)
+        self.assertEqual([r['distance'] for r in records], [0, 1.5, 3, 4.5, 6])
+
+    def test_every_record_moves_by_the_same_ratio(self):
+        out, _ = fitpace.rescale(self.ride([0, 10, 20, 100]), 50.0)
+        records, _ = fitroute.read_records(out)
+        self.assertEqual([r['distance'] for r in records], [0, 5, 10, 50])
+
+    def test_speed_scales_with_distance(self):
+        out, _ = fitpace.rescale(self.ride([0, 3, 6, 9, 12], speed=4.0), 6.0)
+        messages, _ = fitpace.read_messages(out)
+        speeds = [
+            fields[73][0]
+            for number, fields in messages
+            if number == fitshift.RECORD and 73 in fields
+        ]
+        self.assertEqual(speeds, [2000] * 5)
+
+    def test_the_plain_speed_field_scales_too(self):
+        out, _ = fitpace.rescale(self.ride([0, 3, 6, 9, 12], speed=4.0), 6.0)
+        messages, _ = fitpace.read_messages(out)
+        speeds = [
+            fields[6][0]
+            for number, fields in messages
+            if number == fitshift.RECORD and 6 in fields
+        ]
+        self.assertEqual(speeds, [2000] * 5)
+
+    def test_the_totals_follow_the_records(self):
+        out, _ = fitpace.rescale(self.ride([0, 3, 6, 9, 12]), 6.0)
+        messages, _ = fitpace.read_messages(out)
+        for number, fields in messages:
+            if number in (fitpace.SESSION, fitpace.LAP):
+                self.assertEqual(fields[9][0], 600)
+
+    def test_timestamps_are_left_alone(self):
+        data = self.ride([0, 3, 6, 9, 12])
+        out, _ = fitpace.rescale(data, 6.0)
+        before, _ = fitroute.read_records(data)
+        after, _ = fitroute.read_records(out)
+        self.assertEqual([r['stamp'] for r in before], [r['stamp'] for r in after])
+
+    def test_a_run_with_no_distance_is_refused(self):
+        with self.assertRaises(ValueError):
+            fitpace.rescale(self.ride([0, 0, 0]), 6.0)
+
+    def test_a_run_with_no_records_is_refused(self):
+        records = [(START + i, [(3, 'uint8', 140)]) for i in range(3)]
+        with self.assertRaises(ValueError):
+            fitpace.rescale(activity(records), 6.0)
+
+
 class Pace(unittest.TestCase):
     """The heart-rate model, on a run where speed follows heart rate exactly."""
 

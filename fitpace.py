@@ -6,7 +6,9 @@ had its distance run away. --keep learns how speed follows heart rate for this
 runner on this day from the good part, and paces the rest by that relation.
 --max-speed instead keeps every second of the recorded pace that is a pace at
 all and replaces only the jumps. Either way the rest of the run is stretched
-so it finishes on the route's length.
+so it finishes on the route's length. --scale is for the other shape of
+error: a watch that measured the whole run long, where no stretch of it is
+wrong on its own and every record scales by the same ratio.
 
 Only record.distance, the record speed fields and the lap and session
 distance and speed totals change, in place. Positions are fitroute.py's job.
@@ -213,6 +215,55 @@ def unjam(data, limit, length):
     return out, stats
 
 
+def rescale(data, length):
+    """Return (bytes, stats) with every distance and speed scaled onto length.
+
+    For a watch that measured the whole run long: the shape of the pace is
+    right everywhere and only its scale is wrong, so every record moves by
+    the same ratio rather than one stretch of the run absorbing the error.
+    """
+    messages, end = read_messages(data)
+    records = [
+        fields
+        for number, fields in messages
+        if number == RECORD and {TIMESTAMP, DISTANCE} <= fields.keys()
+    ]
+    if not records:
+        raise ValueError('no records with a timestamp and distance')
+
+    times = [r[TIMESTAMP][0] for r in records]
+    recorded = [r[DISTANCE][0] / 100.0 for r in records]
+    if recorded[-1] <= 0:
+        raise ValueError('the run records no distance to scale')
+    ratio = length / recorded[-1]
+
+    distances = [distance * ratio for distance in recorded]
+    distances[-1] = length
+    speeds = [
+        (
+            r[ENHANCED_SPEED][0] / 1000.0
+            if ENHANCED_SPEED in r
+            else r.get(SPEED, (0,))[0] / 1000.0
+        )
+        * ratio
+        for r in records
+    ]
+
+    out = rewrite(data, messages, end, times, distances, speeds, records, -1)
+    elapsed = times[-1] - times[0]
+    stats = {
+        'records': len(records),
+        'split': -1,
+        'recorded': recorded[-1],
+        'length': length,
+        'ratio': ratio,
+        'elapsed': elapsed,
+        'was': elapsed / recorded[-1] * 1000,
+        'pace': elapsed / length * 1000,
+    }
+    return out, stats
+
+
 def rewrite(data, messages, end, times, distances, speeds, records, split):
     """Return a copy of data with distance and speed after split replaced.
 
@@ -286,6 +337,12 @@ def main():
         help='the recorded pace is right wherever it is slower '
         'than this, and its median replaces the jumps',
     )
+    how.add_argument(
+        '--scale',
+        action='store_true',
+        help="the whole run covered the route's length and the recorded "
+        'pace is the right shape, so scale every record onto it',
+    )
     parser.add_argument(
         '--laps',
         type=int,
@@ -310,11 +367,12 @@ def main():
         # repeated is the route the run actually covered.
         length = measure(read_route(args.route) * args.laps)[-1]
         data = open(args.base, 'rb').read()
-        patched, stats = (
-            pace(data, args.keep * 1000, length)
-            if args.keep is not None
-            else unjam(data, args.max_speed / 3.6, length)
-        )
+        if args.scale:
+            patched, stats = rescale(data, length)
+        elif args.keep is not None:
+            patched, stats = pace(data, args.keep * 1000, length)
+        else:
+            patched, stats = unjam(data, args.max_speed / 3.6, length)
     except (
         ValueError,
         IndexError,
@@ -326,33 +384,44 @@ def main():
         print(f'cannot pace: {err}', file=sys.stderr)
         return 1
 
-    kept_pace = stats['kept_time'] / stats['kept_distance'] * 1000
     laps = f', {args.laps} laps' if args.laps > 1 else ''
     print(f'route     {stats["length"] / 1000:.3f} km{laps}')
-    print(
-        f'kept      {stats["kept_distance"] / 1000:.3f} km in '
-        f'{stats["kept_time"] // 60}:{stats["kept_time"] % 60:02d}, '
-        f'{minutes(kept_pace)}'
-    )
-    rest = (stats['length'] - stats['kept_distance']) / 1000
-    if args.keep is not None:
+    if args.scale:
         print(
-            f'model     speed = {stats["intercept"]:.3f} + '
-            f'{stats["slope"]:.4f} * hr m/s'
+            f'recorded  {stats["recorded"] / 1000:.3f} km in '
+            f'{stats["elapsed"] // 60}:{stats["elapsed"] % 60:02d}, '
+            f'{minutes(stats["was"])}'
         )
         print(
-            f'modelled  {stats["modelled"] / 1000:.3f} km by heart rate, '
-            f'scaled {stats["ratio"]:.5f} to {rest:.3f} km'
+            f'scaled    every record by {stats["ratio"]:.5f} to '
+            f'{stats["length"] / 1000:.3f} km'
         )
     else:
+        kept_pace = stats['kept_time'] / stats['kept_distance'] * 1000
         print(
-            f'dropped   {stats["dropped"] / 1000:.3f} km of inflated '
-            f'distance from {stats["jumps"]} records'
+            f'kept      {stats["kept_distance"] / 1000:.3f} km in '
+            f'{stats["kept_time"] // 60}:{stats["kept_time"] % 60:02d}, '
+            f'{minutes(kept_pace)}'
         )
-        print(
-            f'rebuilt   {stats["rebuilt"] / 1000:.3f} km from the pace that '
-            f'was left, scaled {stats["ratio"]:.5f} to {rest:.3f} km'
-        )
+        rest = (stats['length'] - stats['kept_distance']) / 1000
+        if args.keep is not None:
+            print(
+                f'model     speed = {stats["intercept"]:.3f} + '
+                f'{stats["slope"]:.4f} * hr m/s'
+            )
+            print(
+                f'modelled  {stats["modelled"] / 1000:.3f} km by heart rate, '
+                f'scaled {stats["ratio"]:.5f} to {rest:.3f} km'
+            )
+        else:
+            print(
+                f'dropped   {stats["dropped"] / 1000:.3f} km of inflated '
+                f'distance from {stats["jumps"]} records'
+            )
+            print(
+                f'rebuilt   {stats["rebuilt"] / 1000:.3f} km from the pace that '
+                f'was left, scaled {stats["ratio"]:.5f} to {rest:.3f} km'
+            )
     print(
         f'paced     {stats["records"] - stats["split"] - 1} records at '
         f'{minutes(stats["pace"])} on average'

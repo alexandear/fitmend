@@ -10,7 +10,7 @@ project (`package = false`): there is no package and no build step.
 ```sh
 uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
 uv run fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--laps N] [--rebuild] [--gaps-only] [--broken-only] [--hills] [--max-speed KMH] [-n]
-uv run fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH) [--laps N] -o OUT.fit [-n]
+uv run fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH | --scale) [--laps N] -o OUT.fit [-n]
 uv run fitstop.py BASE.fit [ROUTE.gpx] -o OUT.fit [--gap S] [--max-speed KMH] [--laps N] [-n]
 uv run fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
 ```

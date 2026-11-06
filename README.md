@@ -235,8 +235,9 @@ than a route's elevation lookup, and `<ele>` is not what you came for.
 ## fitpace.py — rebuild a run's distance
 
 For a run whose distance is wrong: a watch that ran on its accelerometer and
-then got spoofed, or one that measured with the jammed GPS itself. The route
-sets the length, so the run finishes where it finished. Positions are left to
+then got spoofed, one that measured with the jammed GPS itself, or one that
+measured the whole run long. The route sets the length, so the run finishes
+where it finished. Positions are left to
 `fitroute.py`, which places each record at its new distance. No dependencies.
 
 ### From heart rate, where the pace is gone
@@ -283,6 +284,28 @@ than once. The ratio is what the rebuilt pace alone would have fallen short
 by — 10% here, from a receiver still being jammed where it was not jumping
 outright. It lands on the route's length because that is the length that was
 run; nothing else in the recording knows how far the run went.
+
+### Where the whole run is long, not one stretch of it
+
+Both modes above assume some part of the recording is right and stretch the
+rest onto the route. A watch can instead measure the whole run a few per cent
+long — a trail run under tree cover, where every second is credited slightly
+too much. Nothing is wrong on its own, so there is no split to find and no
+part to rebuild: `--scale` multiplies every record by one ratio.
+
+    uv run fitpace.py BASE.fit ROUTE.gpx --scale -o PACED.fit
+
+    route     7.854 km
+    recorded  8.141 km in 46:02, 5:39/km
+    scaled    every record by 0.96483 to 7.854 km
+    paced     2644 records at 5:52/km on average
+
+The shape of the pace survives untouched — every split slows by the same
+3.5% — because the recording's relative pace was never in question, only the
+scale it was measured at. Use it when the recorded distance is simply too
+long; use `--keep` or `--max-speed` when a stretch of the run is wrong and
+the rest is right, since scaling would spread one bad stretch's error across
+a run that was measured correctly.
 
 ### What it rewrites
 
