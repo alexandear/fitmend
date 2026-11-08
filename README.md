@@ -10,8 +10,8 @@ creates `.venv` on the first `uv run` and keeps it in step with `uv.lock`;
 there is no install step. Python 3.15 is the floor, and uv fetches it itself
 if the machine has no Python that new.
 
-`fitshift.py`, `fitpace.py`, `fitstop.py` and `fitroute.py`'s default path are
-stdlib-only, so plain `uv run` is enough:
+`fitshift.py`, `fitpace.py`, `fitstop.py`, `fithills.py` and `fitroute.py`'s
+default path are stdlib-only, so plain `uv run` is enough:
 
     uv run fitshift.py IN.fit -n --by 1d
 
@@ -368,6 +368,63 @@ becomes zero. Timestamps are untouched, so the stop stays a stop and the run
 keeps its own clock. Positions are `fitroute.py`'s job. Without a route
 argument the invented distance is dropped and nothing is scaled.
 
+## fithills.py — repeat a route's climb as often as it was run
+
+For a hill session recorded against a route that climbs the hill once. The
+route goes up and comes back down, once; the session ran it seven times, so
+the route is neither the length nor the shape of what the watch recorded.
+No dependencies.
+
+    uv run fithills.py BASE.fit ROUTE.gpx --from 3.97 --to 4.625 --repeats 7 \
+        -o PACED.fit --route-out HILLS.gpx
+    uv run --extra rebuild fitroute.py PACED.fit HILLS.gpx --rebuild -o OUT.fit
+
+On a 19.316 km session of seven repeats up a 674 m, 8% climb:
+
+    hill      0.674 km up +55 m, 0.690 km down, from 3.962 km
+    route     546 points, 17.381 km (9.200 km with 7 repeats)
+    recorded  5902 records, 19.316 km
+    lap   1   warm-up    3.962 km  was 3.878 km    5:33/km  was  5:40/km
+    lap   2   climb 1    0.674 km  was 0.796 km    6:34/km  was  5:34/km
+    lap   3   descent 1  0.690 km  was 0.775 km    5:40/km  was  5:02/km
+    ...
+    lap  16   cool-down  3.875 km  was 4.329 km    5:57/km  was  5:19/km
+
+`--from` is where the climb starts and `--to` is near its top; the top itself
+is the highest point the route reaches before it is back at the foot, so
+`--to` only has to be close. The block between the two is repeated
+`--repeats` times, and `--route-out` writes the result, because `fitroute.py`
+has to place the positions against the same route.
+
+### Why each lap and not the whole run
+
+A watch with no footpod measures a steep repeat far worse than it measures
+the flat approach to it. The session above read its approach 2% short and its
+repeats 16% long, and read the same 3.9 km of path 12% apart on the way out
+and the way home — so there is no one ratio that is right for all of it. The
+lap marks are the one thing such a watch records exactly: the wearer pressed
+lap at the foot of the climb and again at the top.
+
+So each lap is rescaled onto the span of route its own leg covered, and
+`fitroute.py` then runs at a scale of 1.00000. A single ratio over the whole
+run would have started the first climb 470 m before the hill even began, and
+left each turnaround drifting a further 62 m, up to half a repeat out of
+phase.
+
+### The laps have to match the session
+
+Warm-up, then a climb and a descent for every repeat, then cool-down: 2N+2
+laps for N repeats, and a file with any other number is refused rather than
+guessed at. Lap totals are written from the spans, so they tile the session
+total exactly instead of each lap reading a metre or two long.
+
+### What it rewrites
+
+`record.distance`, the record speed fields, and the lap and session total
+distance and average and maximum speed. Timestamps, heart rate, cadence and
+altitude are untouched — only the distance axis was ever wrong. Positions are
+`fitroute.py`'s job.
+
 ## fitshift.py — move an activity in time
 
 For a ride recorded with the watch on the wrong date, or one that needs to
@@ -448,15 +505,16 @@ it does not, a record was misread and the file is not written.
     uv run --extra rebuild python -m unittest  # with the re-encoding paths too
 
 `test_fitmend.py` builds the FIT bytes of every case it covers, so it needs no
-sample activity and no `fit-tool`. It covers the library half of the three
+sample activity and no `fit-tool`. It covers the library half of the four
 stdlib-only tools: the parser and the shift, the route geometry and the match,
-the distance rebuild, the stop repair, and the correctness traps each of them
-exists to avoid —
+the distance rebuild, the stop repair, the hill-repeat rescale, and the
+correctness traps each of them exists to avoid —
 a private field 253 that is a counter rather than a date, the invalid
 sentinels for a date and for a position, a record written with no position
 field, a compressed-timestamp header and a developer field, a route that
-passes the same point twice, and every refusal each tool raises rather than
-write a file it cannot stand behind.
+passes the same point twice, a climb whose top is not the point asked for, and
+every refusal each tool raises rather than write a file it cannot stand
+behind.
 
 A file built by a test is a file written to be understood, which is the one
 thing a file off a watch never is. So `test_tracks.py` runs the same library

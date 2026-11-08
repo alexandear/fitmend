@@ -10,7 +10,9 @@ import os
 import struct
 import tempfile
 import unittest
+from itertools import pairwise
 
+import fithills
 import fitpace
 import fitroute
 import fitshift
@@ -1220,6 +1222,267 @@ class Destop(unittest.TestCase):
         _, stats = fitstop.destop(activity(records))
         self.assertIsNone(stats['windows'][0]['heart'])
         self.assertAlmostEqual(stats['dropped'], 110.0)
+
+
+class Hills(unittest.TestCase):
+    """A hill session rescaled onto a route that climbs the hill once.
+
+    The route runs 800 m north and comes back, so its climb is the 400 m to
+    the turnaround and the descent is the 400 m home: every span the splice
+    produces is 400 m, and a lap that recorded anything else has to land on
+    400 m exactly.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        line = north(9, 100)
+        self.points = line + line[7::-1]
+        # flat to the foot, then 10 m a point to the turnaround, then back
+        self.elevations = (
+            [0.0] * 5 + [10.0, 20.0, 30.0, 40.0, 30.0, 20.0, 10.0] + [0.0] * 5
+        )
+        self.cumulative = fitroute.measure(self.points)
+
+    def path(self, name='hill.gpx'):
+        return os.path.join(self.dir.name, name)
+
+    def hill(self, low=400.0, high=800.0):
+        return fithills.find_hill(
+            self.points, self.cumulative, self.elevations, low, high
+        )
+
+    def session(self, legs, speed=3.0, heart=140):
+        """A FIT whose laps each cover their (seconds, metres) in turn."""
+        messages = [(FILE_ID, [(0, 'uint8', 4), (4, 'uint32', START)])]
+        laps = []
+        stamp, travelled = START, 0.0
+        for seconds, metres in legs:
+            start = stamp
+            for step in range(seconds):
+                along = travelled + metres * step / (seconds - 1)
+                messages.append(
+                    (
+                        fitshift.RECORD,
+                        [
+                            (253, 'uint32', stamp),
+                            (5, 'uint32', round(along * 100)),
+                            (73, 'uint32', round(speed * 1000)),
+                            (6, 'uint16', round(speed * 1000)),
+                            (3, 'uint8', heart),
+                        ],
+                    )
+                )
+                stamp += 1
+            travelled += metres
+            laps.append(
+                (
+                    LAP,
+                    [
+                        (253, 'uint32', stamp - 1),
+                        (2, 'uint32', start),
+                        (7, 'uint32', seconds * 1000),
+                        (8, 'uint32', seconds * 1000),
+                        (9, 'uint32', 0),
+                        (13, 'uint16', 0),
+                        (14, 'uint16', 0),
+                    ],
+                )
+            )
+        messages += laps
+        messages.append(
+            (
+                SESSION,
+                [
+                    (253, 'uint32', stamp - 1),
+                    (2, 'uint32', START),
+                    (7, 'uint32', (stamp - 1 - START) * 1000),
+                    (8, 'uint32', (stamp - 1 - START) * 1000),
+                    (9, 'uint32', 0),
+                    (14, 'uint16', 0),
+                    (15, 'uint16', 0),
+                ],
+            )
+        )
+        messages.append((ACTIVITY, [(253, 'uint32', stamp - 1), (5, 'uint32', stamp)]))
+        return encode(messages)
+
+    def legs(self, count=3, warm=500.0, up=300.0, down=500.0, cool=200.0):
+        """A session of count repeats, every lap recording the wrong distance."""
+        return [(60, warm)] + [(30, up), (30, down)] * count + [(60, cool)]
+
+    def rescaled(self, count=3, **kwargs):
+        foot, apex, back = self.hill()
+        along = fitroute.measure(fithills.splice(self.points, foot, back, count))
+        spans = fithills.spans(along, foot, apex, back, count)
+        return fithills.relap(self.session(self.legs(count, **kwargs)), spans), spans
+
+    # --- finding the hill on the route ---
+
+    def test_nearest_snaps_to_the_closer_point(self):
+        self.assertEqual(fithills.nearest(self.cumulative, 390.0), 4)
+        self.assertEqual(fithills.nearest(self.cumulative, 460.0), 5)
+
+    def test_nearest_clamps_to_the_ends(self):
+        self.assertEqual(fithills.nearest(self.cumulative, -100.0), 0)
+        self.assertEqual(fithills.nearest(self.cumulative, 99e3), 16)
+
+    def test_the_hill_is_its_foot_its_top_and_the_way_back(self):
+        self.assertEqual(self.hill(), (4, 8, 12))
+
+    def test_the_top_is_the_highest_point_not_the_one_asked_for(self):
+        # 700 m along is a point short of the turnaround; the summit still wins.
+        self.assertEqual(self.hill(high=700.0), (4, 8, 12))
+
+    def test_a_route_that_never_comes_back_is_refused(self):
+        # a straight line climbs away from the foot and never returns to it
+        line = north(12, 100)
+        rise = [float(index) for index in range(12)]
+        with self.assertRaisesRegex(ValueError, 'never comes back'):
+            fithills.find_hill(line, fitroute.measure(line), rise, 400.0, 800.0)
+
+    def test_a_climb_that_ends_before_it_starts_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'must start before'):
+            self.hill(low=800.0, high=400.0)
+
+    def test_a_flat_out_and_back_has_no_top(self):
+        with self.assertRaisesRegex(ValueError, 'no top'):
+            fithills.find_hill(self.points, self.cumulative, [0.0] * 17, 400.0, 800.0)
+
+    # --- repeating the route ---
+
+    def test_splice_repeats_the_block(self):
+        self.assertEqual(
+            fithills.splice([0, 1, 2, 3, 4], 1, 3, 3), [0, 1, 2, 1, 2, 1, 2, 3, 4]
+        )
+
+    def test_splice_once_is_the_route_unchanged(self):
+        self.assertEqual(fithills.splice(self.points, 4, 12, 1), self.points)
+
+    def test_seven_repeats_add_six_blocks(self):
+        foot, _, back = self.hill()
+        repeated = fithills.splice(self.points, foot, back, 7)
+        self.assertEqual(len(repeated), len(self.points) + 6 * (back - foot))
+        self.assertAlmostEqual(fitroute.measure(repeated)[-1], 1600.0 + 6 * 800.0)
+
+    def test_the_route_keeps_its_start_and_finish(self):
+        repeated = fithills.splice(self.points, 4, 12, 4)
+        self.assertEqual(repeated[0], self.points[0])
+        self.assertEqual(repeated[-1], self.points[-1])
+
+    # --- the spans each lap covers ---
+
+    def test_there_is_a_span_for_every_lap(self):
+        _, spans = self.rescaled(count=7)
+        self.assertEqual(len(spans), 2 * 7 + 2)
+
+    def test_the_spans_tile_the_route_end_to_end(self):
+        _, spans = self.rescaled(count=3)
+        self.assertAlmostEqual(spans[0][0], 0.0)
+        self.assertAlmostEqual(spans[-1][1], 3200.0)
+        for (_, high), (low, _) in pairwise(spans):
+            self.assertAlmostEqual(high, low)
+
+    def test_every_leg_of_this_route_is_four_hundred_metres(self):
+        _, spans = self.rescaled(count=3)
+        self.assertEqual([round(high - low) for low, high in spans], [400] * 8)
+
+    # --- rescaling the laps ---
+
+    def test_each_lap_lands_on_its_span(self):
+        (out, _), spans = self.rescaled(count=3)
+        messages, _ = fitpace.read_messages(out)
+        totals = [
+            fields[9][0] / 100.0 for number, fields in messages if number == fitpace.LAP
+        ]
+        self.assertEqual(totals, [round(high - low, 2) for low, high in spans])
+
+    def test_the_lap_totals_tile_the_session_total(self):
+        (out, _), _ = self.rescaled(count=3)
+        messages, _ = fitpace.read_messages(out)
+        laps = [f[9][0] for n, f in messages if n == fitpace.LAP]
+        session = next(f[9][0] for n, f in messages if n == fitpace.SESSION)
+        self.assertEqual(sum(laps), session)
+
+    def test_the_run_ends_on_the_route(self):
+        (out, stats), _ = self.rescaled(count=3)
+        records, _ = fitroute.read_records(out)
+        self.assertAlmostEqual(records[-1]['distance'], 3200.0, places=1)
+        self.assertAlmostEqual(stats['length'], 3200.0)
+
+    def test_distance_never_goes_backwards(self):
+        (out, _), _ = self.rescaled(count=3)
+        records, _ = fitroute.read_records(out)
+        along = [r['distance'] for r in records]
+        self.assertEqual(along, sorted(along))
+
+    def test_a_lap_that_measured_long_is_brought_in(self):
+        # the descents recorded 500 m of the 400 m they covered
+        (_, stats), _ = self.rescaled(count=3)
+        for lap in [stats['laps'][index] for index in (2, 4, 6)]:
+            self.assertAlmostEqual(lap['was'], 500.0, places=1)
+            self.assertAlmostEqual(lap['route'], 400.0, places=1)
+
+    def test_a_lap_that_measured_short_is_let_out(self):
+        (_, stats), _ = self.rescaled(count=3)
+        for index in (1, 3, 5):
+            self.assertAlmostEqual(stats['laps'][index]['was'], 300.0, places=1)
+            self.assertAlmostEqual(stats['laps'][index]['route'], 400.0, places=1)
+
+    def test_speed_follows_its_own_lap(self):
+        # the climbs shrink by 400/300, the descents by 400/500
+        (out, _), _ = self.rescaled(count=1)
+        messages, _ = fitpace.read_messages(out)
+        speeds = [
+            fields[73][0]
+            for number, fields in messages
+            if number == fitshift.RECORD and 73 in fields
+        ]
+        self.assertEqual(speeds[60], round(3000 * 400 / 300))
+        self.assertEqual(speeds[90], round(3000 * 400 / 500))
+
+    def test_heart_rate_is_left_alone(self):
+        data = self.session(self.legs(3))
+        foot, apex, back = self.hill()
+        along = fitroute.measure(fithills.splice(self.points, foot, back, 3))
+        out, _ = fithills.relap(data, fithills.spans(along, foot, apex, back, 3))
+        for source in (data, out):
+            messages, _ = fitpace.read_messages(source)
+            hearts = [
+                fields[3][0]
+                for number, fields in messages
+                if number == fitshift.RECORD and 3 in fields
+            ]
+            self.assertEqual(set(hearts), {140})
+
+    def test_timestamps_are_left_alone(self):
+        data = self.session(self.legs(3))
+        foot, apex, back = self.hill()
+        along = fitroute.measure(fithills.splice(self.points, foot, back, 3))
+        out, _ = fithills.relap(data, fithills.spans(along, foot, apex, back, 3))
+        before, _ = fitroute.read_records(data)
+        after, _ = fitroute.read_records(out)
+        self.assertEqual([r['stamp'] for r in before], [r['stamp'] for r in after])
+
+    def test_the_parse_still_ends_on_the_file_crc(self):
+        (out, _), _ = self.rescaled(count=3)
+        self.assertEqual(fitshift.walk(out, lambda *a: None), len(out) - 2)
+
+    # --- the refusals ---
+
+    def test_too_few_laps_is_refused(self):
+        foot, apex, back = self.hill()
+        along = fitroute.measure(fithills.splice(self.points, foot, back, 7))
+        spans = fithills.spans(along, foot, apex, back, 7)
+        with self.assertRaisesRegex(ValueError, '7 repeats need 16 laps'):
+            fithills.relap(self.session(self.legs(3)), spans)
+
+    def test_a_file_with_no_records_is_refused(self):
+        foot, apex, back = self.hill()
+        along = fitroute.measure(fithills.splice(self.points, foot, back, 3))
+        spans = fithills.spans(along, foot, apex, back, 3)
+        with self.assertRaisesRegex(ValueError, 'no records'):
+            fithills.relap(encode([(FILE_ID, [(0, 'uint8', 4)])]), spans)
 
 
 class Put(unittest.TestCase):
