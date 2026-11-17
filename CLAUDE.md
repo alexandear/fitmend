@@ -10,7 +10,7 @@ project (`package = false`): there is no package and no build step.
 ```sh
 uv run --extra rebuild fitgraft.py BASE.fit DONOR.fit -o OUT.fit [--gaps-only]
 uv run fitroute.py BASE.fit ROUTE.gpx -o OUT.fit [--no-scale] [--reverse] [--laps N] [--rebuild] [--gaps-only] [--broken-only] [--hills] [--max-speed KMH] [-n]
-uv run fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH | --scale) [--laps N] -o OUT.fit [-n]
+uv run fitpace.py BASE.fit ROUTE.gpx (--keep KM | --max-speed KMH | --scale | --grade [--split KM ...]) [--laps N] -o OUT.fit [-n]
 uv run fitstop.py BASE.fit [ROUTE.gpx] -o OUT.fit [--gap S] [--max-speed KMH] [--laps N] [-n]
 uv run fithills.py BASE.fit ROUTE.gpx --from KM --to KM --repeats N -o OUT.fit [--route-out GPX] [-n]
 uv run fitshift.py IN.fit -o OUT.fit (--to 'YYYY-MM-DD HH:MM' | --by 1d) [--utc] [--zone +3] [-n]
@@ -113,12 +113,13 @@ alone. That constraint drives the design, so preserve it:
   record was misread, and the file is not written otherwise.
 - `crc16`, `RECORD`, and the base-type/field-number constants come from here too.
   `fitroute.py` imports `RECORD`, `crc16` and `walk`; `fitroute.rebuild` imports
-  `fitgraft.set_position`; `fitpace.py` imports `measure`, `read_route` and
-  `retime` from `fitroute.py`; `fitstop.py` imports `measure` and `read_route`
-  from `fitroute.py` and `read_messages`, `rewrite` and `minutes` from
-  `fitpace.py`, so the lap and session totals move one way only. `fithills.py`
-  imports the same two sets, plus `put` and `AVG_SPEED` to write the lap
-  totals from its spans after `rewrite` has read them off the records.
+  `fitgraft.set_position`; `fitpace.py` imports `measure`, `read_route`,
+  `read_elevations`, `height` and `retime` from `fitroute.py`; `fitstop.py`
+  imports `measure` and `read_route` from `fitroute.py` and `read_messages`,
+  `rewrite` and `minutes` from `fitpace.py`, so the lap and session totals move one way only. `fithills.py`
+  imports the same two sets, plus `retotal` to write the lap totals from its
+  spans after `rewrite` has read them off the records; `fitpace.py --grade
+  --split` uses `retotal` the same way.
 
 Correctness traps the code already handles — don't regress them:
 
@@ -160,6 +161,14 @@ Correctness traps the code already handles — don't regress them:
   span of route its own leg covered, because the lap marks are the one thing
   such a watch recorded exactly. Scaling the whole run by one ratio instead
   would start the first climb 470 m before the hill.
+- **A uniform rescale runs every hill at the pace of the flat.** The same
+  watch reads a climb about as fast as the approach to it. `fitpace.py
+  --grade` keeps the recorded speed as the effort and divides it by the
+  cost of the route's slope, a quadratic fit to Strava's grade-adjusted pace
+  rather than Minetti's metabolic cost, which would run a -10% trail twice as
+  fast as the flat. Anchoring on the barometric altitude instead overfits a
+  route's DEM elevation, which is too coarse in a ravine: it forced 2:44/km
+  descents next to 7:48/km flats.
 - **A repeated route is not the route.** A hill session's GPX climbs the hill
   once. `fithills.py --repeats N` repeats the block from the climb's foot to
   where the descent is back at it, which is what the run covered;

@@ -8,13 +8,17 @@ runner on this day from the good part, and paces the rest by that relation.
 all and replaces only the jumps. Either way the rest of the run is stretched
 so it finishes on the route's length. --scale is for the other shape of
 error: a watch that measured the whole run long, where no stretch of it is
-wrong on its own and every record scales by the same ratio.
+wrong on its own and every record scales by the same ratio. --grade is for
+a hilly run measured by an accelerometer, which reads a climb as fast as the
+flat: the recorded speed is kept as the effort and the route's slope sets how
+far it carried, and --split pins each lap press to where it was on the route.
 
 Only record.distance, the record speed fields and the lap and session
 distance and speed totals change, in place. Positions are fitroute.py's job.
 """
 
 import argparse
+import bisect
 import math
 import statistics
 import struct
@@ -22,7 +26,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 from itertools import pairwise
 
-from fitroute import measure, read_route, retime
+from fitroute import height, measure, read_elevations, read_route, retime
 from fitshift import RECORD, crc16, walk
 
 SESSION = 18
@@ -48,6 +52,15 @@ SMOOTHING = 30
 
 # The first minutes of a run raise heart rate without raising pace.
 WARMUP = 120
+
+# The effort a stride carries is read off the recorded speed over a minute,
+# and the slope under it off the route over 40 m, so neither one's noise
+# reads as a hill.
+EFFORT_SMOOTHING = 15
+SLOPE_WINDOW = 20.0
+
+# Past this the quadratic below stops describing anyone running.
+STEEPEST = 30.0
 
 
 def read_messages(data):
@@ -264,6 +277,147 @@ def rescale(data, length):
     return out, stats
 
 
+def cost(slope):
+    """Return how much harder a metre at this slope is than a flat one.
+
+    A quadratic fit to Strava's grade-adjusted pace, which was measured from
+    heart rate across millions of runs: about 1.5 at +10%, cheapest near -9%
+    at about 0.87, and dearer again past that, where a steep descent has to
+    be braked. Minetti's metabolic cost would make a -10% trail twice as fast
+    as the flat, which nobody runs.
+    """
+    percent = max(-STEEPEST, min(STEEPEST, slope * 100))
+    return 1 + 0.0302 * percent + 0.0017 * percent * percent
+
+
+def slope_at(cumulative, elevations, along):
+    low = max(0.0, along - SLOPE_WINDOW)
+    high = min(cumulative[-1], along + SLOPE_WINDOW)
+    if high <= low:
+        return 0.0
+    rise = height(cumulative, elevations, high) - height(cumulative, elevations, low)
+    return rise / (high - low)
+
+
+def climb(times, efforts, cumulative, elevations, low, high):
+    """Return (distances, speeds) over one span with the pace set by the slope.
+
+    Each second the runner covers effort / cost(slope) metres, times one
+    factor found by bisection so the span ends exactly on high.
+    """
+
+    def run(factor):
+        distances, speeds = [low], []
+        for index, effort in enumerate(efforts):
+            speed = (
+                factor * effort / cost(slope_at(cumulative, elevations, distances[-1]))
+            )
+            speeds.append(speed)
+            if index + 1 < len(times):
+                step = speed * (times[index + 1] - times[index])
+                distances.append(min(high, distances[-1] + step))
+        return distances, speeds
+
+    slow, fast = 0.0, 1.0
+    while run(fast)[0][-1] < high:
+        fast *= 2
+    for _ in range(50):
+        middle = (slow + fast) / 2
+        if run(middle)[0][-1] < high:
+            slow = middle
+        else:
+            fast = middle
+    distances, speeds = run(fast)
+    distances[-1] = high
+    return distances, speeds
+
+
+def grade(data, points, elevations, splits=()):
+    """Return (bytes, stats) with the pace on each span following its slope.
+
+    For a hilly run measured by a watch with no footpod: its accelerometer
+    reads a climb as fast as the flat, so a uniform rescale leaves every
+    hill run at the pace of the approach to it. The recorded speed is kept
+    as the effort, and the route's slope sets what that effort covers.
+
+    splits are where along the route the wearer pressed lap, in metres. Each
+    lap is then fitted onto its own span, since the lap mark is the one
+    position such a watch recorded exactly; with none, the run is one span.
+    """
+    messages, end = read_messages(data)
+    records = [
+        fields
+        for number, fields in messages
+        if number == RECORD and {TIMESTAMP, DISTANCE} <= fields.keys()
+    ]
+    if not records:
+        raise ValueError('no records with a timestamp and distance')
+
+    cumulative = measure(points)
+    length = cumulative[-1]
+    bounds = [0.0, *splits, length]
+    if any(b <= a for a, b in pairwise(bounds)):
+        raise ValueError(
+            f'every split has to lie inside the {length / 1000:.3f} km route, in order'
+        )
+    spans = list(pairwise(bounds))
+
+    times = [r[TIMESTAMP][0] for r in records]
+    recorded = [
+        r[ENHANCED_SPEED][0] / 1000.0
+        if ENHANCED_SPEED in r
+        else r.get(SPEED, (0,))[0] / 1000.0
+        for r in records
+    ]
+    efforts = smooth(recorded, EFFORT_SMOOTHING)
+    if not any(efforts):
+        raise ValueError('the run records no speed to take the effort from')
+
+    laps = [
+        fields for number, fields in messages if number == LAP and START_TIME in fields
+    ]
+    edges = [0, len(records)]
+    if splits:
+        if len(laps) != len(spans):
+            raise ValueError(
+                f'{len(splits)} splits need {len(spans)} laps, '
+                f'and the file has {len(laps)}'
+            )
+        edges = [bisect.bisect_left(times, lap[START_TIME][0]) for lap in laps]
+        if edges[0] != 0 or any(b <= a for a, b in pairwise(edges)):
+            raise ValueError('the laps do not start one after another over the records')
+        edges.append(len(records))
+
+    distances, speeds = [], []
+    for (low, high), (start, stop) in zip(spans, pairwise(edges), strict=True):
+        span_distances, span_speeds = climb(
+            times[start:stop], efforts[start:stop], cumulative, elevations, low, high
+        )
+        distances += span_distances
+        speeds += span_speeds
+
+    out = rewrite(data, messages, end, times, distances, speeds, records, -1)
+    if splits:
+        out = retotal(out, end, laps, spans)
+    stats = {
+        'records': len(records),
+        'split': -1,
+        'length': length,
+        'recorded': records[-1][DISTANCE][0] / 100.0,
+        'pace': (times[-1] - times[0]) / length * 1000,
+        'laps': [
+            {
+                'route': high - low,
+                'was': (records[stop - 1][DISTANCE][0] - records[start][DISTANCE][0])
+                / 100.0,
+                'elapsed': times[stop - 1] - times[start],
+            }
+            for (low, high), (start, stop) in zip(spans, pairwise(edges), strict=True)
+        ],
+    }
+    return out, stats
+
+
 def rewrite(data, messages, end, times, distances, speeds, records, split):
     """Return a copy of data with distance and speed after split replaced.
 
@@ -298,6 +452,27 @@ def rewrite(data, messages, end, times, distances, speeds, records, split):
             put(out, fields, field, round(top * 1000))
 
     # The 14-byte header's own CRC covers bytes 0..11, which do not change.
+    struct.pack_into('<H', out, end, crc16(bytes(out[:end])))
+    return bytes(out)
+
+
+def retotal(data, end, laps, spans):
+    """Return a copy of data with every lap total its span of route exactly.
+
+    rewrite() reads a lap total back off the records inside the lap's own
+    reported window, which can reach a sample or two past where the next lap
+    starts and charge its first metres to both. That is a rounding error
+    elsewhere, but here the lap marks are what the whole rescale rests on, so
+    the totals are written from the spans instead and tile the session.
+    """
+    out = bytearray(data)
+    for lap, (low, high) in zip(laps, spans, strict=True):
+        total = high - low
+        put(out, lap, TOTAL_DISTANCE, round(total * 100))
+        timer = lap.get(TOTAL_TIMER_TIME, (0,))[0] / 1000.0
+        if timer > 0:
+            for field in AVG_SPEED[LAP]:
+                put(out, lap, field, round(total / timer * 1000))
     struct.pack_into('<H', out, end, crc16(bytes(out[:end])))
     return bytes(out)
 
@@ -343,6 +518,21 @@ def main():
         help="the whole run covered the route's length and the recorded "
         'pace is the right shape, so scale every record onto it',
     )
+    how.add_argument(
+        '--grade',
+        action='store_true',
+        help="the recorded pace is the effort, and the route's <ele> slows "
+        'it on the climbs and speeds it on the descents',
+    )
+    parser.add_argument(
+        '--split',
+        type=float,
+        action='append',
+        default=[],
+        metavar='KM',
+        help='with --grade, how far along the route a lap was pressed; '
+        'once per press, in order',
+    )
     parser.add_argument(
         '--laps',
         type=int,
@@ -361,13 +551,22 @@ def main():
         parser.error('--laps must be at least 1')
     if args.max_speed is not None and args.max_speed <= 0:
         parser.error('--max-speed must be positive')
+    if args.split and not args.grade:
+        parser.error('--split needs --grade')
 
     try:
         # A lap of a loop ends where the next one starts, so the route
         # repeated is the route the run actually covered.
-        length = measure(read_route(args.route) * args.laps)[-1]
+        points = read_route(args.route) * args.laps
+        length = measure(points)[-1]
         data = open(args.base, 'rb').read()
-        if args.scale:
+        if args.grade:
+            elevations = read_elevations(args.route)
+            if elevations is None:
+                raise ValueError(f'{args.route}: needs <ele> on every track point')
+            splits = [km * 1000 for km in args.split]
+            patched, stats = grade(data, points, elevations * args.laps, splits)
+        elif args.scale:
             patched, stats = rescale(data, length)
         elif args.keep is not None:
             patched, stats = pace(data, args.keep * 1000, length)
@@ -386,7 +585,16 @@ def main():
 
     laps = f', {args.laps} laps' if args.laps > 1 else ''
     print(f'route     {stats["length"] / 1000:.3f} km{laps}')
-    if args.scale:
+    if args.grade:
+        print(f'recorded  {stats["recorded"] / 1000:.3f} km')
+        for index, lap in enumerate(stats['laps']):
+            was = lap['elapsed'] / lap['was'] * 1000 if lap['was'] else 0
+            now = lap['elapsed'] / lap['route'] * 1000
+            print(
+                f'lap {index + 1:>3}   {lap["route"] / 1000:.3f} km  was '
+                f'{lap["was"] / 1000:.3f} km   {minutes(was)} -> {minutes(now)}'
+            )
+    elif args.scale:
         print(
             f'recorded  {stats["recorded"] / 1000:.3f} km in '
             f'{stats["elapsed"] // 60}:{stats["elapsed"] % 60:02d}, '

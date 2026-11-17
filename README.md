@@ -235,8 +235,9 @@ than a route's elevation lookup, and `<ele>` is not what you came for.
 ## fitpace.py — rebuild a run's distance
 
 For a run whose distance is wrong: a watch that ran on its accelerometer and
-then got spoofed, one that measured with the jammed GPS itself, or one that
-measured the whole run long. The route sets the length, so the run finishes
+then got spoofed, one that measured with the jammed GPS itself, one that
+measured the whole run long, or one that ran its hills at the pace of the
+flat. The route sets the length, so the run finishes
 where it finished. Positions are left to
 `fitroute.py`, which places each record at its new distance. No dependencies.
 
@@ -306,6 +307,41 @@ scale it was measured at. Use it when the recorded distance is simply too
 long; use `--keep` or `--max-speed` when a stretch of the run is wrong and
 the rest is right, since scaling would spread one bad stretch's error across
 a run that was measured correctly.
+
+### Where the hills are run at the pace of the flat
+
+A watch with no footpod measures distance with its accelerometer, and reads
+a climb about as fast as the flat approach to it. Scaled onto the route, such
+a run takes a 10% hill at 5:44/km and the descent off it at 5:16/km — the
+average of the lap, everywhere. `--grade` keeps the recorded speed as the
+effort and lets the route's `<ele>` decide how far that effort carried.
+
+    uv run fitpace.py BASE.fit ROUTE.gpx --grade --split 4.1 -o PACED.fit
+
+    route     9.213 km
+    recorded  9.598 km
+    lap   1   4.100 km  was 4.224 km   5:10/km -> 5:19/km
+    lap   2   5.113 km  was 5.371 km   5:07/km -> 5:23/km
+    paced     2960 records at 5:21/km on average
+
+Each second covers the smoothed recorded speed divided by the cost of the
+slope under it, and one factor per lap makes the lap end where it ended. The
+cost is a quadratic fit to Strava's grade-adjusted pace: about 1.5 times the
+flat at +10%, cheapest near −9% at 0.87, and dearer again past that, where a
+steep descent has to be braked. Minetti's metabolic cost, the textbook curve,
+would run a −10% trail twice as fast as the flat, which nobody does. On the
+run above the 10% climb now goes at 8:16/km and the −11% descent at 4:08/km.
+
+The barometric altitude is the check rather than the input. With the uniform
+rescale, the climbs the altimeter recorded sit a mean 48 m off the route's;
+graded, 16 m. Pinning every climb to the route's elevation directly overfits
+instead: a route's DEM elevation is too coarse in a ravine, and that pinning
+ran the descents at 2:44/km beside flats at 7:48/km.
+
+`--split KM` says where along the route a lap was pressed, once per press. The
+lap mark is the one position such a watch recorded exactly, so each lap is
+graded onto its own span and the lap totals are written from the spans. The
+file has to hold one lap more than there are splits.
 
 ### What it rewrites
 

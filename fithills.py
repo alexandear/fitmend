@@ -32,22 +32,20 @@ import xml.etree.ElementTree as ElementTree
 from itertools import pairwise
 
 from fitpace import (
-    AVG_SPEED,
     DISTANCE,
     ENHANCED_SPEED,
     LAP,
     SPEED,
     START_TIME,
     TIMESTAMP,
-    TOTAL_DISTANCE,
     TOTAL_TIMER_TIME,
     minutes,
-    put,
     read_messages,
+    retotal,
     rewrite,
 )
 from fitroute import haversine, measure, read_elevations, read_route
-from fitshift import RECORD, crc16
+from fitshift import RECORD
 
 # A descent is back at the foot of the climb once it is this close to it.
 # The same tolerance fitroute.py calls a fix on the route.
@@ -195,27 +193,6 @@ def relap(data, spans):
         ],
     }
     return out, stats
-
-
-def retotal(data, end, laps, spans):
-    """Return a copy of data with every lap total its span of route exactly.
-
-    rewrite() reads a lap total back off the records inside the lap's own
-    reported window, which can reach a sample or two past where the next lap
-    starts and charge its first metres to both. That is a rounding error
-    elsewhere, but here the lap marks are what the whole rescale rests on, so
-    the totals are written from the spans instead and tile the session.
-    """
-    out = bytearray(data)
-    for lap, (low, high) in zip(laps, spans, strict=True):
-        total = high - low
-        put(out, lap, TOTAL_DISTANCE, round(total * 100))
-        timer = lap.get(TOTAL_TIMER_TIME, (0,))[0] / 1000.0
-        if timer > 0:
-            for field in AVG_SPEED[LAP]:
-                put(out, lap, field, round(total / timer * 1000))
-    struct.pack_into('<H', out, end, crc16(bytes(out[:end])))
-    return bytes(out)
 
 
 def write_route(path, points, elevations):

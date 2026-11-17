@@ -986,6 +986,161 @@ class Rescale(unittest.TestCase):
             fitpace.rescale(activity(records), 6.0)
 
 
+class Grade(unittest.TestCase):
+    """The recorded pace as effort, slowed by the route's climbs.
+
+    The route runs 1000 m north: flat for 400 m, a 10% climb of 200 m, then
+    flat again 20 m up. The run records a steady 3 m/s for 300 s, the
+    accelerometer reading of a runner who eased off on the hill.
+    """
+
+    def setUp(self):
+        self.points = north(21, 50)
+        self.elevations = [0.0] * 8 + [0.0, 5.0, 10.0, 15.0, 20.0] + [20.0] * 8
+        self.flat = [0.0] * 21
+
+    def session(self, legs, speed=3.0):
+        """A FIT whose laps each cover their (seconds, metres) in turn."""
+        messages = [(FILE_ID, [(0, 'uint8', 4), (4, 'uint32', START)])]
+        laps = []
+        stamp, travelled = START, 0.0
+        for seconds, metres in legs:
+            start = stamp
+            for step in range(seconds):
+                along = travelled + metres * step / seconds
+                messages.append(
+                    (
+                        fitshift.RECORD,
+                        [
+                            (253, 'uint32', stamp),
+                            (5, 'uint32', round(along * 100)),
+                            (73, 'uint32', round(speed * 1000)),
+                        ],
+                    )
+                )
+                stamp += 1
+            travelled += metres
+            laps.append(
+                (
+                    LAP,
+                    [
+                        (253, 'uint32', stamp - 1),
+                        (2, 'uint32', start),
+                        (7, 'uint32', seconds * 1000),
+                        (8, 'uint32', seconds * 1000),
+                        (9, 'uint32', 0),
+                        (13, 'uint16', 0),
+                    ],
+                )
+            )
+        return encode(messages + laps)
+
+    def distances(self, data):
+        records, _ = fitroute.read_records(data)
+        return [r['distance'] for r in records]
+
+    def seconds_between(self, distances, low, high):
+        return sum(low <= d < high for d in distances)
+
+    def test_the_run_lands_on_the_route(self):
+        out, stats = fitpace.grade(
+            self.session([(300, 900)]), self.points, self.elevations
+        )
+        self.assertAlmostEqual(self.distances(out)[-1], 1000.0, places=1)
+        self.assertAlmostEqual(stats['length'], 1000.0, places=1)
+
+    def test_a_climb_is_run_slower_than_the_flat(self):
+        out, _ = fitpace.grade(self.session([(300, 900)]), self.points, self.elevations)
+        distances = self.distances(out)
+        hill = self.seconds_between(distances, 450, 550)
+        flat = self.seconds_between(distances, 100, 200)
+        self.assertGreater(hill, flat * 1.3)
+
+    def test_on_a_flat_route_it_is_the_rescale(self):
+        data = self.session([(300, 900)])
+        graded, _ = fitpace.grade(data, self.points, self.flat)
+        scaled, _ = fitpace.rescale(data, fitroute.measure(self.points)[-1])
+        for one, other in zip(
+            self.distances(graded), self.distances(scaled), strict=True
+        ):
+            self.assertAlmostEqual(one, other, delta=0.05)
+
+    def test_distance_never_goes_backwards(self):
+        out, _ = fitpace.grade(self.session([(300, 900)]), self.points, self.elevations)
+        distances = self.distances(out)
+        self.assertEqual(distances, sorted(distances))
+
+    def test_the_speed_fields_slow_on_the_climb(self):
+        out, _ = fitpace.grade(self.session([(300, 900)]), self.points, self.elevations)
+        records, _ = fitroute.read_records(out)
+        messages, _ = fitpace.read_messages(out)
+        speeds = [f[73][0] for n, f in messages if n == fitshift.RECORD]
+        on_hill = [
+            s
+            for s, r in zip(speeds, records, strict=True)
+            if 450 <= r['distance'] < 550
+        ]
+        on_flat = [
+            s
+            for s, r in zip(speeds, records, strict=True)
+            if 100 <= r['distance'] < 200
+        ]
+        self.assertLess(max(on_hill), min(on_flat))
+
+    def test_a_split_pins_the_lap_press_to_the_route(self):
+        # the watch read the first lap 600 m long, and it was 400 m
+        data = self.session([(150, 600), (150, 300)])
+        out, stats = fitpace.grade(data, self.points, self.elevations, [400.0])
+        self.assertAlmostEqual(self.distances(out)[150], 400.0, places=1)
+        routes = [round(lap['route'], 3) for lap in stats['laps']]
+        self.assertEqual(routes, [400.0, 600.0])
+
+    def test_the_lap_totals_are_the_spans(self):
+        data = self.session([(150, 600), (150, 300)])
+        out, _ = fitpace.grade(data, self.points, self.elevations, [400.0])
+        messages, _ = fitpace.read_messages(out)
+        totals = [f[9][0] for n, f in messages if n == LAP]
+        self.assertEqual(totals, [40000, 60000])
+
+    def test_a_split_needs_a_lap_for_each_side(self):
+        with self.assertRaises(ValueError):
+            fitpace.grade(
+                self.session([(300, 900)]), self.points, self.elevations, [400.0]
+            )
+
+    def test_a_split_past_the_end_of_the_route_is_refused(self):
+        data = self.session([(150, 600), (150, 300)])
+        with self.assertRaises(ValueError):
+            fitpace.grade(data, self.points, self.elevations, [1200.0])
+
+    def test_a_run_with_no_speed_is_refused(self):
+        with self.assertRaises(ValueError):
+            fitpace.grade(
+                self.session([(300, 900)], speed=0.0), self.points, self.elevations
+            )
+
+    def test_the_parse_still_ends_on_the_file_crc(self):
+        out, _ = fitpace.grade(self.session([(300, 900)]), self.points, self.elevations)
+        self.assertEqual(fitshift.walk(out, lambda *_: None), len(out) - 2)
+
+
+class Cost(unittest.TestCase):
+    def test_the_flat_costs_one(self):
+        self.assertEqual(fitpace.cost(0.0), 1.0)
+
+    def test_a_climb_costs_more(self):
+        self.assertGreater(fitpace.cost(0.10), 1.4)
+
+    def test_a_gentle_descent_costs_less(self):
+        self.assertLess(fitpace.cost(-0.05), 1.0)
+
+    def test_a_steep_descent_is_braked(self):
+        self.assertGreater(fitpace.cost(-0.30), fitpace.cost(-0.10))
+
+    def test_past_the_steepest_it_stops_climbing(self):
+        self.assertEqual(fitpace.cost(0.5), fitpace.cost(0.3))
+
+
 class Pace(unittest.TestCase):
     """The heart-rate model, on a run where speed follows heart rate exactly."""
 
