@@ -52,6 +52,7 @@ select = [
     "PLC",  # pylint convention
     "PLE",  # pylint error
     "PLW",  # pylint warning
+    "PTH",  # pathlib over os.path and open()
     "RET",  # return statements
     "RSE",  # raise
     "RUF",  # ruff-specific
@@ -65,8 +66,7 @@ select = [
     "YTT",  # sys.version misuse
 ]
 # Left out rather than fought: D (the code names its functions instead of
-# docstringing every one), PT (the suite is unittest), PTH (whole files are
-# read and written with open(), not Path),
+# docstringing every one), PT (the suite is unittest),
 # PLR (magic values are FIT field numbers, and the match functions take the
 # arguments they take), Q and COM (the formatter owns quotes and commas),
 # T20 (print is how a CLI reports), TRY and EM (the messages read better
@@ -76,7 +76,6 @@ ignore = [
     "ISC001",  # conflicts with the formatter
     "PLC0415", # fit_tool is imported inside rebuild() so the default path need not
     "S314",    # a GPX route is a local file the user chose, and defusedxml is a dependency
-    "SIM115",  # one-line open().read() in a main() that exits; `with` only adds indentation
 ]
 
 [tool.ruff.lint.per-file-ignores]

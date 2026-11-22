@@ -26,12 +26,12 @@ fit_tool, so its own arithmetic is covered where the skip already is.
 import bisect
 import collections
 import importlib.util
-import os
 import struct
 import tempfile
 import unittest
 from collections.abc import Callable, Sequence
 from itertools import pairwise
+from pathlib import Path
 
 import fithills
 import fitpace
@@ -39,12 +39,12 @@ import fitroute
 import fitshift
 import fitstop
 
-TESTDATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'testdata')
+TESTDATA = Path(__file__).resolve().parent / 'testdata'
 
-JAMMED = os.path.join(TESTDATA, 'Run_16.10.2026.fit')
-JAMMED_ROUTE = os.path.join(TESTDATA, '16.10.2027.gpx')
-BLIND = os.path.join(TESTDATA, 'Lunch_Run.fit')
-BLIND_ROUTE = os.path.join(TESTDATA, '13.10.2026.gpx')
+JAMMED = TESTDATA / 'Run_16.10.2026.fit'
+JAMMED_ROUTE = TESTDATA / '16.10.2027.gpx'
+BLIND = TESTDATA / 'Lunch_Run.fit'
+BLIND_ROUTE = TESTDATA / '13.10.2026.gpx'
 
 DAY = 86400
 
@@ -55,12 +55,11 @@ LIMIT = 20 / 3.6
 FIT_TOOL = importlib.util.find_spec('fit_tool') is not None
 
 
-def read(path: str) -> bytes:
-    with open(path, 'rb') as source:
-        return source.read()
+def read(path: Path) -> bytes:
+    return path.read_bytes()
 
 
-def read_elevations(path: str) -> list[float]:
+def read_elevations(path: Path) -> list[float]:
     elevations = fitroute.read_elevations(path)
     if elevations is None:
         raise AssertionError(f'{path}: a track point has no <ele>')
@@ -270,7 +269,7 @@ def sensors(data: bytes) -> list[tuple[int, float, float | None]]:
 class Parse(unittest.TestCase):
     def test_a_real_export_is_read_to_its_last_byte(self) -> None:
         for path in (JAMMED, BLIND):
-            with self.subTest(file=os.path.basename(path)):
+            with self.subTest(file=path.name):
                 data = read(path)
                 self.assertEqual(fitshift.walk(data, lambda *args: None), len(data) - 2)
                 self.assertTrue(crc_is_right(data))
@@ -694,14 +693,13 @@ class Rebuild(unittest.TestCase):
 
         directory = tempfile.TemporaryDirectory()
         cls.addClassCleanup(directory.cleanup)
-        cls.rebuilt_path = os.path.join(directory.name, 'rebuilt.fit')
-        cls.donor_path = os.path.join(directory.name, 'donor.fit')
-        cls.out_path = os.path.join(directory.name, 'out.fit')
+        cls.rebuilt_path = Path(directory.name) / 'rebuilt.fit'
+        cls.donor_path = Path(directory.name) / 'donor.fit'
+        cls.out_path = Path(directory.name) / 'out.fit'
         for path, content in ((cls.rebuilt_path, cls.out), (cls.donor_path, donor)):
-            with open(path, 'wb') as target:
-                target.write(content)
+            path.write_bytes(content)
 
-    def fixes(self, path: str) -> list[fitroute.Point | None]:
+    def fixes(self, path: Path) -> list[fitroute.Point | None]:
         records, _ = fitroute.read_records(read(path))
         return [r['fix'] for r in records]
 
@@ -753,9 +751,8 @@ class Rebuild(unittest.TestCase):
         donor = read(self.donor_path)
         _, _, window, _ = fitshift.survey(donor)
         moved, _ = fitshift.shift(donor, DAY, (window[0] - DAY, window[1] + DAY))
-        elsewhen = os.path.join(os.path.dirname(self.out_path), 'elsewhen.fit')
-        with open(elsewhen, 'wb') as target:
-            target.write(moved)
+        elsewhen = self.out_path.with_name('elsewhen.fit')
+        elsewhen.write_bytes(moved)
 
         stats = self.fitgraft.graft(BLIND, elsewhen, self.out_path)
         self.assertEqual(stats['unmatched'], 2517)

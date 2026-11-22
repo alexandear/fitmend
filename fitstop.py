@@ -24,6 +24,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 from fitpace import (
@@ -178,14 +179,17 @@ def destop(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('base', help='FIT file whose watch paused and jumped')
+    parser.add_argument(
+        'base', type=Path, help='FIT file whose watch paused and jumped'
+    )
     parser.add_argument(
         'route',
         nargs='?',
+        type=Path,
         help='GPX file whose length the run covered; without it '
         'the rest of the run is left as recorded',
     )
-    parser.add_argument('-o', '--out', help='output FIT file')
+    parser.add_argument('-o', '--out', type=Path, help='output FIT file')
     parser.add_argument(
         '--gap',
         type=float,
@@ -226,7 +230,7 @@ def main() -> int:
         # A lap of a loop ends where the next one starts, so the route
         # repeated is the route the run actually covered.
         length = measure(read_route(args.route) * args.laps)[-1] if args.route else None
-        data = open(args.base, 'rb').read()
+        data = args.base.read_bytes()
         patched, stats = destop(data, length, args.gap, args.max_speed / 3.6)
     except (
         ValueError,
@@ -263,7 +267,7 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    open(args.out, 'wb').write(patched)
+    args.out.write_bytes(patched)
     print(f'wrote     {args.out}')
     return 0
 

@@ -6,12 +6,12 @@ depends on a real activity or on fit-tool.
 
 import argparse
 import datetime
-import os
 import struct
 import tempfile
 import unittest
 from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 import fithills
@@ -133,10 +133,10 @@ def activity(records: Sequence[Record], extra: Sequence[Message] = ()) -> bytes:
 
 
 def route(
-    path: str,
+    path: Path,
     points: Sequence[fitroute.Point],
     elevations: Sequence[float] | None = None,
-) -> str:
+) -> Path:
     """Write a GPX track of these (lat, lon) points and return the path."""
     body = [
         '<?xml version="1.0"?>',
@@ -148,8 +148,7 @@ def route(
             body.append(f'<ele>{elevations[index]}</ele>')
         body.append('</trkpt>')
     body.append('</trkseg></trk></gpx>')
-    with open(path, 'w') as out:
-        out.write('\n'.join(body))
+    path.write_text('\n'.join(body))
     return path
 
 
@@ -613,8 +612,8 @@ class ReadRoute(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
 
-    def path(self, name: str = 'route.gpx') -> str:
-        return os.path.join(self.dir.name, name)
+    def path(self, name: str = 'route.gpx') -> Path:
+        return Path(self.dir.name) / name
 
     def test_it_reads_the_track_points(self) -> None:
         points = fitroute.read_route(route(self.path(), north(3, 100)))
@@ -632,12 +631,11 @@ class ReadRoute(unittest.TestCase):
 
     def test_one_missing_ele_is_no_profile(self) -> None:
         path = self.path()
-        with open(path, 'w') as out:
-            out.write(
-                '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
-                '<trkpt lat="50.0" lon="30.0"><ele>1.0</ele></trkpt>'
-                '<trkpt lat="50.1" lon="30.0"/></trkseg></trk></gpx>'
-            )
+        path.write_text(
+            '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
+            '<trkpt lat="50.0" lon="30.0"><ele>1.0</ele></trkpt>'
+            '<trkpt lat="50.1" lon="30.0"/></trkseg></trk></gpx>'
+        )
         self.assertIsNone(fitroute.read_elevations(path))
 
 
@@ -1460,8 +1458,8 @@ class Hills(unittest.TestCase):
         )
         self.cumulative = fitroute.measure(self.points)
 
-    def path(self, name: str = 'hill.gpx') -> str:
-        return os.path.join(self.dir.name, name)
+    def path(self, name: str = 'hill.gpx') -> Path:
+        return Path(self.dir.name) / name
 
     def hill(self, low: float = 400.0, high: float = 800.0) -> tuple[int, int, int]:
         return fithills.find_hill(

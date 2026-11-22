@@ -12,6 +12,7 @@ import re
 import struct
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 # FIT date_time is uint32 seconds since this instant, UTC.
 EPOCH = datetime.datetime(1989, 12, 31, tzinfo=datetime.UTC)
@@ -313,8 +314,8 @@ def render(stamp: int, offset: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('input', help='FIT file to read')
-    parser.add_argument('-o', '--out', help='output FIT file')
+    parser.add_argument('input', type=Path, help='FIT file to read')
+    parser.add_argument('-o', '--out', type=Path, help='output FIT file')
     when = parser.add_mutually_exclusive_group(required=True)
     when.add_argument(
         '--to',
@@ -349,7 +350,7 @@ def main() -> int:
     if not args.out and not args.dry_run:
         parser.error('-o/--out is required unless --dry-run')
 
-    data = open(args.input, 'rb').read()
+    data = args.input.read_bytes()
     try:
         start, last, window, offset = survey(data)
     except (ValueError, IndexError, KeyError, struct.error) as err:
@@ -378,7 +379,7 @@ def main() -> int:
     # on the far side of the UTC day from the values it sits between.
     low, high = window
     patched, count = shift(data, seconds, (low - 86400, high + 86400), args.zone)
-    open(args.out, 'wb').write(patched)
+    args.out.write_bytes(patched)
     print(f'moved  {count} timestamps')
     if args.zone is not None:
         print(f'zone   recorded as UTC{seconds_zone(args.zone)}')

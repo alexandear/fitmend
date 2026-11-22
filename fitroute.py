@@ -20,6 +20,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 from fitshift import RECORD, TIMESTAMP, crc16, walk
@@ -95,7 +96,7 @@ def haversine(first: Point, second: Point) -> float:
     return 2 * EARTH_RADIUS * math.asin(math.sqrt(a))
 
 
-def read_route(path: str) -> list[Point]:
+def read_route(path: Path) -> list[Point]:
     """Return the route's track points as [(lat, lon), ...]."""
     points = []
     for element in ElementTree.parse(path).iter():
@@ -111,7 +112,7 @@ def read_route(path: str) -> list[Point]:
     return points
 
 
-def read_elevations(path: str) -> list[float] | None:
+def read_elevations(path: Path) -> list[float] | None:
     """Return the route's <ele> per track point, or None if any is missing."""
     elevations = []
     for element in ElementTree.parse(path).iter():
@@ -657,7 +658,7 @@ def graft(
 
 
 def rebuild(
-    base_path: str,
+    base_path: Path,
     points: Sequence[Point],
     scale: bool = True,
     reverse: bool = False,
@@ -685,13 +686,12 @@ def rebuild(
     if reverse:
         points = points[::-1]
         elevations = elevations and elevations[::-1]
-    with open(base_path, 'rb') as base_file:
-        data = base_file.read()
+    data = base_path.read_bytes()
     records, anchors, cumulative, stats = match(
         data, points, scale, gaps_only, elevations, broken_only, limit
     )
 
-    base = FitFile.from_file(base_path)
+    base = FitFile.from_bytes(data)
     messages = [
         r.message for r in base.records if not isinstance(r.message, DefinitionMessage)
     ]
@@ -723,9 +723,9 @@ def rebuild(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('base', help='FIT file with the good sensor data')
-    parser.add_argument('route', help='GPX file with the route to follow')
-    parser.add_argument('-o', '--out', help='output FIT file')
+    parser.add_argument('base', type=Path, help='FIT file with the good sensor data')
+    parser.add_argument('route', type=Path, help='GPX file with the route to follow')
+    parser.add_argument('-o', '--out', type=Path, help='output FIT file')
     parser.add_argument(
         '--no-scale',
         action='store_true',
@@ -813,7 +813,7 @@ def main() -> int:
                 limit,
             )
         else:
-            data = open(args.base, 'rb').read()
+            data = args.base.read_bytes()
             patched, stats = graft(
                 data,
                 points,
@@ -865,7 +865,7 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    open(args.out, 'wb').write(patched)
+    args.out.write_bytes(patched)
     print(f'wrote     {args.out}')
     return 0
 

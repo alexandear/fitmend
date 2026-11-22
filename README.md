@@ -596,16 +596,12 @@ timestamps, which are integers, pass where a float series is expected.
 
 `ruff` formats and lints, configured in `pyproject.toml`: single quotes, 88
 columns, and most of the rule families that do not argue with how the code is
-written. The exclusions are listed there with a reason each, and four are
+written. The exclusions are listed there with a reason each, and three are
 worth repeating, because each one is a decision rather than an oversight:
 
 - `PLC0415`, imports not at top level. `fitroute.rebuild()` imports
   `fit_tool` inside the function. That is what keeps the default path
   stdlib-only; hoisting it would make every run depend on the library.
-- `SIM115`, `open()` without a context manager. Each tool reads its input
-  with a one-line `open(path, 'rb').read()` and writes its output the same
-  way, in a `main()` that exits straight after. A `with` block there buys a
-  level of indentation and nothing else.
 - `S314`, `ElementTree` on untrusted XML. The GPX is a route file the user
   named on the command line, and `defusedxml` would be a dependency.
 - `PLR2004`, magic values. The constants in the parser are FIT field and base

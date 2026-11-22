@@ -31,6 +31,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 from fitpace import (
@@ -208,10 +209,10 @@ def relap(
 
 
 def write_route(
-    path: str, points: Sequence[Point], elevations: Sequence[float]
+    path: Path, points: Sequence[Point], elevations: Sequence[float]
 ) -> None:
     """Write the repeated route out as a GPX track."""
-    with open(path, 'w', encoding='utf-8') as out:
+    with path.open('w', encoding='utf-8') as out:
         out.write(
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<gpx version="1.1" creator="fithills.py"'
@@ -236,8 +237,10 @@ def name(index: int, count: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('base', help='FIT file the session was recorded to')
-    parser.add_argument('route', help='GPX file whose route climbs the hill once')
+    parser.add_argument('base', type=Path, help='FIT file the session was recorded to')
+    parser.add_argument(
+        'route', type=Path, help='GPX file whose route climbs the hill once'
+    )
     parser.add_argument(
         '--from',
         dest='foot',
@@ -261,9 +264,9 @@ def main() -> int:
         metavar='N',
         help='how many times the climb was run',
     )
-    parser.add_argument('-o', '--out', help='output FIT file')
+    parser.add_argument('-o', '--out', type=Path, help='output FIT file')
     parser.add_argument(
-        '--route-out', metavar='GPX', help='write the repeated route here'
+        '--route-out', type=Path, metavar='GPX', help='write the repeated route here'
     )
     parser.add_argument(
         '-n', '--dry-run', action='store_true', help='report the result without writing'
@@ -289,7 +292,7 @@ def main() -> int:
         repeated = splice(points, foot, back, args.repeats)
         heights = splice(elevations, foot, back, args.repeats)
         along = measure(repeated)
-        data = open(args.base, 'rb').read()
+        data = args.base.read_bytes()
         patched, stats = relap(data, spans(along, foot, apex, back, args.repeats))
     except (
         ValueError,
@@ -324,8 +327,7 @@ def main() -> int:
 
     if args.dry_run:
         return 0
-    with open(args.out, 'wb') as out:
-        out.write(patched)
+    args.out.write_bytes(patched)
     print(f'wrote     {args.out}')
     if args.route_out:
         write_route(args.route_out, repeated, heights)

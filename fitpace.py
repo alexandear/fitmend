@@ -26,6 +26,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 from fitroute import Point, height, measure, read_elevations, read_route, retime
@@ -537,9 +538,13 @@ def minutes(seconds_per_km: float) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('base', help='FIT file with the heart rate to model from')
-    parser.add_argument('route', help='GPX file whose length the run covered')
-    parser.add_argument('-o', '--out', help='output FIT file')
+    parser.add_argument(
+        'base', type=Path, help='FIT file with the heart rate to model from'
+    )
+    parser.add_argument(
+        'route', type=Path, help='GPX file whose length the run covered'
+    )
+    parser.add_argument('-o', '--out', type=Path, help='output FIT file')
     how = parser.add_mutually_exclusive_group(required=True)
     how.add_argument(
         '--keep',
@@ -602,7 +607,7 @@ def main() -> int:
         # repeated is the route the run actually covered.
         points = read_route(args.route) * args.laps
         length = measure(points)[-1]
-        data = open(args.base, 'rb').read()
+        data = args.base.read_bytes()
         if args.grade:
             elevations = read_elevations(args.route)
             if elevations is None:
@@ -681,7 +686,7 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    open(args.out, 'wb').write(patched)
+    args.out.write_bytes(patched)
     print(f'wrote     {args.out}')
     return 0
 

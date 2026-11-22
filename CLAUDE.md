@@ -90,15 +90,14 @@ plain `dict[str, Any]` rather than a `TypedDict`.
 Single quotes, 88 columns. The rule set is broad and listed in
 `pyproject.toml` with a comment on each family; both it and the `ignore` list
 are the interesting part, so read them before adding a rule or a `noqa`. The
-five standing exemptions are the lazy `fit_tool` import inside `rebuild()`
-(`PLC0415`), `ElementTree` on a GPX file the user named (`S314`), the
-one-line `open(...).read()` in each `main()` (`SIM115`), `FURB187`, whose
+four standing exemptions are the lazy `fit_tool` import inside `rebuild()`
+(`PLC0415`), `ElementTree` on a GPX file the user named (`S314`), `FURB187`, whose
 in-place `reverse()` would reverse the caller's route too, and `ISC001`, which
 the formatter owns. The one `ty: ignore` is `fit_tool`'s
 `definition_message`, typed non-optional but cleared on purpose in
 `set_position`. Whole families left out rather than fought: `D` (function
 names in place of per-function docstrings),
-`PT` (the suite is unittest), `PTH`, `PLR` (magic values are FIT field
+`PT` (the suite is unittest), `PLR` (magic values are FIT field
 numbers), `T20` (print is how a CLI reports), `TRY`/`EM`, `ICN`
 (`ElementTree`, not `ET`). The `CRC_TABLE` grid in `fitshift.py` is fenced
 with `# fmt: off`, since one hex value per line is harder to check against
