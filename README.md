@@ -570,7 +570,11 @@ one covered:
   `fitgraft.py` are tested — the two classes that need `fit-tool`, and the
   only ones that are skipped without it. It also pauses four times, including
   once for 80 seconds, without inventing a metre across any of them, so it is
-  what `fitstop.py` has to leave alone.
+  what `fitstop.py` has to leave alone. It measured 7.79 km of an 8.12 km
+  route over eight auto-laps, which is what `fitpace.py --scale` and
+  `--grade` stretch onto the route, and what `fithills.py`'s per-lap rescale
+  fits to a warm-up, three repeats and a cool-down. Neither route climbs a
+  hill and comes back to its foot, so finding the hill is covered over bytes.
 
 What those tests assert is invariants, not golden bytes: that the parse ends
 on the file CRC, that the only bytes a tool rewrote belong to the fields it

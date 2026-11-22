@@ -16,12 +16,14 @@ recorded. Two of them live in testdata/, and these tests run over those bytes.
     A run recorded with the GPS off: 2517 records, not one with a position
     field, so only the re-encoding path can give it a position at all. It has
     the heart rate `fitpace.py --keep` models from, and climbs enough for
-    `--hills` to find.
+    `--hills` to find. It measured 7.79 km of an 8.12 km route over eight
+    auto-laps, which `--scale`, `--grade` and fithills.relap stretch onto it.
 
 One class here reads no file: `fitgraft.py` cannot be imported without
 fit_tool, so its own arithmetic is covered where the skip already is.
 """
 
+import bisect
 import collections
 import importlib.util
 import os
@@ -30,6 +32,7 @@ import tempfile
 import unittest
 from itertools import pairwise
 
+import fithills
 import fitpace
 import fitroute
 import fitshift
@@ -145,8 +148,8 @@ def positions(data, global_num, number):
     return found
 
 
-def total_distance(data, global_num):
-    """The first lap or session total_distance in the file, in centimetres."""
+def total_distances(data, global_num):
+    """Every lap or session total_distance in the file, in centimetres."""
     found = []
 
     def visit(kind, number, base_type, endian, pos, size, developer):
@@ -154,7 +157,52 @@ def total_distance(data, global_num):
             found.append(struct.unpack_from(endian + 'I', data, pos)[0])
 
     fitshift.walk(data, visit)
-    return found[0]
+    return found
+
+
+def total_distance(data, global_num):
+    """The first lap or session total_distance in the file, in centimetres."""
+    return total_distances(data, global_num)[0]
+
+
+def is_pace(global_num, number, base_type, size, developer):
+    """What fitpace and fithills may write: distance, speed and their totals."""
+    if developer:
+        return False
+    if global_num == fitshift.RECORD:
+        return number in (fitpace.DISTANCE, fitpace.SPEED, fitpace.ENHANCED_SPEED)
+    if global_num in (fitpace.SESSION, fitpace.LAP):
+        return number in (
+            fitpace.TOTAL_DISTANCE,
+            *fitpace.AVG_SPEED[global_num],
+            *fitpace.MAX_SPEED[global_num],
+        )
+    return False
+
+
+def speeds(data):
+    """Every record's speed, in metres per second."""
+    messages, _ = fitpace.read_messages(data)
+    return [
+        fields.get(fitpace.ENHANCED_SPEED, fields.get(fitpace.SPEED, (0,)))[0] / 1000
+        for number, fields in messages
+        if number == fitshift.RECORD
+    ]
+
+
+def lap_starts(data):
+    """The index of the first record of every lap."""
+    messages, _ = fitpace.read_messages(data)
+    times = [
+        fields[fitpace.TIMESTAMP][0]
+        for number, fields in messages
+        if number == fitshift.RECORD
+    ]
+    return [
+        bisect.bisect_left(times, fields[fitpace.START_TIME][0])
+        for number, fields in messages
+        if number == fitpace.LAP
+    ]
 
 
 def sensors(data):
@@ -350,6 +398,165 @@ class Pace(unittest.TestCase):
             self.assertLessEqual(first, second)
             if stamp2 > stamp1:
                 self.assertLessEqual(second - first, LIMIT * (stamp2 - stamp1))
+
+
+class Rescale(unittest.TestCase):
+    """fitpace --scale: one ratio for every record of a run measured short."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = read(BLIND)
+        cls.length = fitroute.measure(fitroute.read_route(BLIND_ROUTE))[-1]
+        cls.out, cls.stats = fitpace.rescale(cls.data, cls.length)
+
+    def test_the_run_lands_on_the_route(self):
+        self.assertAlmostEqual(self.stats['ratio'], 1.04217, places=5)
+        paced = [distance for _, distance, _ in sensors(self.out)]
+        self.assertAlmostEqual(paced[-1], self.length, places=1)
+        self.assertEqual(
+            total_distance(self.out, fitpace.SESSION), round(self.length * 100)
+        )
+
+    def test_every_record_moves_by_the_same_ratio(self):
+        recorded = [distance for _, distance, _ in sensors(self.data)]
+        paced = [distance for _, distance, _ in sensors(self.out)]
+        for before, after in zip(recorded, paced, strict=True):
+            self.assertAlmostEqual(after, before * self.stats['ratio'], delta=0.01)
+        for before, after in zip(speeds(self.data), speeds(self.out), strict=True):
+            self.assertAlmostEqual(after, before * self.stats['ratio'], delta=0.001)
+
+    def test_nothing_but_distance_and_speed_is_touched(self):
+        self.assertEqual(len(self.out), len(self.data))
+        self.assertLessEqual(
+            rewritten(self.data, self.out), field_bytes(self.data, is_pace)
+        )
+        self.assertTrue(crc_is_right(self.out))
+
+    def test_a_big_endian_run_measured_long_shrinks_onto_its_route(self):
+        data = read(JAMMED)
+        length = fitroute.measure(fitroute.read_route(JAMMED_ROUTE))[-1]
+        out, stats = fitpace.rescale(data, length)
+        self.assertLess(stats['ratio'], 0.6)
+        self.assertAlmostEqual(sensors(out)[-1][1], length, places=1)
+        self.assertLessEqual(rewritten(data, out), field_bytes(data, is_pace))
+        self.assertTrue(crc_is_right(out))
+
+
+class Grade(unittest.TestCase):
+    """fitpace --grade over a hilly run its watch measured with no footpod.
+
+    Its eight auto-laps were pressed a kilometre apart on the watch, so the
+    split case pins seven of them to whole kilometres of the route.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = read(BLIND)
+        cls.points = fitroute.read_route(BLIND_ROUTE)
+        cls.elevations = fitroute.read_elevations(BLIND_ROUTE)
+        cls.length = fitroute.measure(cls.points)[-1]
+        cls.splits = [1000.0 * km for km in range(1, 8)]
+        cls.out, _ = fitpace.grade(cls.data, cls.points, cls.elevations)
+        cls.split, _ = fitpace.grade(cls.data, cls.points, cls.elevations, cls.splits)
+
+    def test_the_run_lands_on_the_route(self):
+        for out in (self.out, self.split):
+            paced = [distance for _, distance, _ in sensors(out)]
+            self.assertEqual(paced[0], 0)
+            self.assertAlmostEqual(paced[-1], self.length, places=1)
+            self.assertEqual(paced, sorted(paced))
+
+    def test_the_time_and_the_altimeter_are_left_as_recorded(self):
+        for out in (self.out, self.split):
+            self.assertEqual(
+                [(stamp, altitude) for stamp, _, altitude in sensors(out)],
+                [(stamp, altitude) for stamp, _, altitude in sensors(self.data)],
+            )
+
+    def test_nothing_but_distance_and_speed_is_touched(self):
+        for out in (self.out, self.split):
+            self.assertEqual(len(out), len(self.data))
+            self.assertLessEqual(
+                rewritten(self.data, out), field_bytes(self.data, is_pace)
+            )
+            self.assertTrue(crc_is_right(out))
+
+    def test_a_split_pins_the_lap_press_to_the_route(self):
+        paced = [distance for _, distance, _ in sensors(self.split)]
+        starts = lap_starts(self.split)
+        self.assertEqual(len(starts), len(self.splits) + 1)
+        for start, split in zip(starts[1:], self.splits, strict=True):
+            self.assertAlmostEqual(paced[start], split, places=1)
+
+    def test_the_lap_totals_are_the_spans(self):
+        bounds = [0.0, *self.splits, self.length]
+        self.assertEqual(
+            total_distances(self.split, fitpace.LAP),
+            [round((high - low) * 100) for low, high in pairwise(bounds)],
+        )
+
+    def test_a_split_needs_a_lap_for_each_side(self):
+        points = fitroute.read_route(JAMMED_ROUTE)
+        elevations = fitroute.read_elevations(JAMMED_ROUTE)
+        with self.assertRaisesRegex(ValueError, '1 splits need 2 laps'):
+            fitpace.grade(read(JAMMED), points, elevations, [5000.0])
+
+
+class Relap(unittest.TestCase):
+    """fithills' per-lap rescale, over a real run's eight lap marks.
+
+    Neither committed route climbs a hill and comes back to its foot, so
+    find_hill and splice are covered over bytes in test_fitmend.Hills. relap
+    only needs a span of route per lap, and eight laps read as a warm-up,
+    three repeats of a climb and a descent, and a cool-down.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = read(BLIND)
+        length = fitroute.measure(fitroute.read_route(BLIND_ROUTE))[-1]
+        cls.spans = list(pairwise([0.0, *(1000.0 * km for km in range(1, 8)), length]))
+        cls.out, cls.stats = fithills.relap(cls.data, cls.spans)
+
+    def test_each_lap_starts_where_its_span_does(self):
+        paced = [distance for _, distance, _ in sensors(self.out)]
+        for start, (low, _) in zip(lap_starts(self.out), self.spans, strict=True):
+            self.assertAlmostEqual(paced[start], low, places=1)
+        self.assertAlmostEqual(paced[-1], self.spans[-1][1], places=1)
+        self.assertEqual(paced, sorted(paced))
+
+    def test_a_lap_keeps_the_shape_of_the_pace_it_recorded(self):
+        recorded = [distance for _, distance, _ in sensors(self.data)]
+        paced = [distance for _, distance, _ in sensors(self.out)]
+        starts = [*lap_starts(self.out), len(recorded)]
+        for (low, high), (start, stop) in zip(
+            self.spans, pairwise(starts), strict=True
+        ):
+            factor = (high - low) / (recorded[stop - 1] - recorded[start])
+            for index in range(start, stop):
+                self.assertAlmostEqual(
+                    paced[index] - low,
+                    (recorded[index] - recorded[start]) * factor,
+                    delta=0.01,
+                )
+
+    def test_the_lap_totals_tile_the_route(self):
+        self.assertEqual(
+            total_distances(self.out, fitpace.LAP),
+            [round((high - low) * 100) for low, high in self.spans],
+        )
+        self.assertEqual(self.stats['records'], 2517)
+
+    def test_nothing_but_distance_and_speed_is_touched(self):
+        self.assertEqual(len(self.out), len(self.data))
+        self.assertLessEqual(
+            rewritten(self.data, self.out), field_bytes(self.data, is_pace)
+        )
+        self.assertTrue(crc_is_right(self.out))
+
+    def test_a_run_with_too_few_laps_is_refused(self):
+        with self.assertRaisesRegex(ValueError, '3 repeats need 8 laps'):
+            fithills.relap(read(JAMMED), self.spans)
 
 
 class Destop(unittest.TestCase):
