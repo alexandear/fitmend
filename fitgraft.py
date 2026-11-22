@@ -7,11 +7,13 @@ lap and session summaries.
 
 import argparse
 import sys
+from collections.abc import Iterator
 
 from fit_tool.definition_message import DefinitionMessage
 from fit_tool.fit_file import FitFile
 from fit_tool.fit_file_builder import FitFileBuilder
 from fit_tool.profile.messages.record_message import (
+    RecordMessage,
     RecordPositionLatField,
     RecordPositionLongField,
 )
@@ -21,7 +23,7 @@ from fit_tool.profile.messages.record_message import (
 SENTINEL = 180.0
 
 
-def is_valid(lat, lon):
+def is_valid(lat: float | None, lon: float | None) -> bool:
     if lat is None or lon is None:
         return False
     if abs(lat) >= SENTINEL or abs(lon) >= SENTINEL:
@@ -29,27 +31,29 @@ def is_valid(lat, lon):
     return -90.0 <= lat <= 90.0
 
 
-def records(fit_file):
+def records(fit_file: FitFile) -> Iterator[RecordMessage]:
     for record in fit_file.records:
         message = record.message
-        if type(message).__name__ == 'RecordMessage':
+        if isinstance(message, RecordMessage):
             yield message
 
 
-def donor_positions(path):
+def donor_positions(path: str) -> dict[int | None, tuple[float, float]]:
     positions = {}
     for message in records(FitFile.from_file(path)):
-        if is_valid(message.position_lat, message.position_long):
-            positions[message.timestamp] = (message.position_lat, message.position_long)
+        lat, lon = message.position_lat, message.position_long
+        if lat is not None and lon is not None and is_valid(lat, lon):
+            positions[message.timestamp] = (lat, lon)
     return positions
 
 
-def set_position(message, lat, lon):
+def set_position(message: RecordMessage, lat: float, lon: float) -> None:
     empty = False
     for field_class in (RecordPositionLatField, RecordPositionLongField):
-        if not any(getattr(f, 'ID', None) == field_class.ID for f in message.fields):
-            message.fields.append(field_class())
         field = message.get_field(field_class.ID)
+        if field is None:
+            field = field_class()
+            message.fields.append(field)
         # A field decoded without a value has a fixed length of zero, and the
         # encoder refuses to write past a fixed length.
         if field.size == 0:
@@ -60,13 +64,15 @@ def set_position(message, lat, lon):
         # DefinitionMessage.from_data_message returns the decoded definition
         # verbatim when one is attached, so a field that was absent from the
         # original record never reaches the encoder unless it is dropped first.
-        message.definition_message = None
+        message.definition_message = None  # ty: ignore[invalid-assignment]
 
     message.position_lat = lat
     message.position_long = lon
 
 
-def graft(base_path, donor_path, out_path, gaps_only=False):
+def graft(
+    base_path: str, donor_path: str, out_path: str, gaps_only: bool = False
+) -> dict[str, int]:
     positions = donor_positions(donor_path)
     base = FitFile.from_file(base_path)
 
@@ -77,7 +83,7 @@ def graft(base_path, donor_path, out_path, gaps_only=False):
         message = record.message
         if isinstance(message, DefinitionMessage):
             continue
-        if type(message).__name__ != 'RecordMessage':
+        if not isinstance(message, RecordMessage):
             builder.add(message)
             continue
 
@@ -102,7 +108,7 @@ def graft(base_path, donor_path, out_path, gaps_only=False):
     return stats
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', help='FIT file with the good speed/power/HR data')
     parser.add_argument('donor', help='FIT file with the good GPS track')

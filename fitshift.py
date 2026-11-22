@@ -11,6 +11,7 @@ import datetime
 import re
 import struct
 import sys
+from collections.abc import Callable
 
 # FIT date_time is uint32 seconds since this instant, UTC.
 EPOCH = datetime.datetime(1989, 12, 31, tzinfo=datetime.UTC)
@@ -30,6 +31,15 @@ DATE_TIME_FIELDS = {(0, 4), (18, 2), (19, 2), (34, 5)}
 RECORD = 20
 ACTIVITY = 34
 
+# A walk() visitor takes global_num, number, base_type, endian, pos, size and
+# developer, in that order.
+type Visit = Callable[[int, int, int, str, int, int, bool], None]
+type OnMessage = Callable[[int], None]
+# A field of a definition message: number, size, base_type and developer.
+type FieldDefinition = tuple[int, int, int, bool]
+# A definition message: its global_num, endian and fields.
+type Definition = tuple[int, str, list[FieldDefinition]]
+
 # fmt: off
 CRC_TABLE = [0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
              0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400]
@@ -42,7 +52,7 @@ DURATION = re.compile(r'^([+-]?)(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$')
 ZONE = re.compile(r'^([+-]?)(\d{1,2})(?::?(\d{2}))?$')
 
 
-def crc16(data):
+def crc16(data: bytes) -> int:
     crc = 0
     for byte in data:
         for nibble in (byte & 0xF, byte >> 4):
@@ -52,7 +62,7 @@ def crc16(data):
     return crc
 
 
-def parse_duration(text):
+def parse_duration(text: str) -> int:
     match = DURATION.match(text.strip())
     if not match or not any(match.group(n) for n in range(2, 6)):
         raise argparse.ArgumentTypeError(f'not a duration: {text}')
@@ -66,7 +76,7 @@ def parse_duration(text):
     return -total if sign == '-' else total
 
 
-def parse_zone(text):
+def parse_zone(text: str) -> int:
     match = ZONE.match(text.strip())
     if not match:
         raise argparse.ArgumentTypeError(f'not a UTC offset: {text}')
@@ -75,14 +85,14 @@ def parse_zone(text):
     return -total if sign == '-' else total
 
 
-def parse_datetime(text):
+def parse_datetime(text: str) -> datetime.datetime:
     try:
         return datetime.datetime.fromisoformat(text.strip().replace('/', '-'))
     except ValueError:
         raise argparse.ArgumentTypeError(f'not an ISO date-time: {text}') from None
 
 
-def walk(data, visit, on_message=None):
+def walk(data: bytes, visit: Visit, on_message: OnMessage | None = None) -> int:
     """Call visit() for every field of every data message; return the data end.
 
     on_message(global_num) is called once per data message, before its fields,
@@ -97,7 +107,7 @@ def walk(data, visit, on_message=None):
     data_size = struct.unpack('<I', data[4:8])[0]
     pos = header_size
     end = header_size + data_size
-    definitions = {}
+    definitions: dict[int, Definition] = {}
 
     while pos < end:
         header = data[pos]
@@ -125,7 +135,7 @@ def walk(data, visit, on_message=None):
         count = data[pos]
         pos += 1
 
-        fields = []
+        fields: list[FieldDefinition] = []
         for _ in range(count):
             fields.append((data[pos], data[pos + 1], data[pos + 2], False))
             pos += 3
@@ -143,7 +153,13 @@ def walk(data, visit, on_message=None):
     return end
 
 
-def read_fields(data, pos, definition, visit, on_message=None):
+def read_fields(
+    data: bytes,
+    pos: int,
+    definition: Definition,
+    visit: Visit,
+    on_message: OnMessage | None = None,
+) -> int:
     global_num, endian, fields = definition
     if on_message:
         on_message(global_num)
@@ -153,19 +169,29 @@ def read_fields(data, pos, definition, visit, on_message=None):
     return pos
 
 
-def is_date_time(global_num, number, base_type, size, developer):
+def is_date_time(
+    global_num: int, number: int, base_type: int, size: int, developer: bool
+) -> bool:
     if developer or size != 4 or base_type & 0x1F != UINT32:
         return False
     return number == TIMESTAMP or (global_num, number) in DATE_TIME_FIELDS
 
 
-def survey(data):
+def survey(data: bytes) -> tuple[int, int, tuple[int, int], int]:
     """Return the activity span, the shiftable window and the local offset."""
-    stamps = []
-    track = []
-    local = {}
+    stamps: list[int] = []
+    track: list[int] = []
+    local: dict[int, int] = {}
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if not is_date_time(global_num, number, base_type, size, developer):
             return
         value = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
@@ -202,13 +228,23 @@ def survey(data):
     return first, last, (first, last), offset
 
 
-def shift(data, seconds, window, zone=None):
+def shift(
+    data: bytes, seconds: int, window: tuple[int, int], zone: int | None = None
+) -> tuple[bytes, int]:
     """Return a copy of data with every date_time inside window moved."""
     out = bytearray(data)
     low, high = window
     count = 0
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         nonlocal count
         if not is_date_time(global_num, number, base_type, size, developer):
             return
@@ -230,15 +266,23 @@ def shift(data, seconds, window, zone=None):
     return bytes(out), count
 
 
-def set_zone(out, seconds):
+def set_zone(out: bytearray, seconds: int) -> bool:
     """Rewrite activity.local_timestamp so the file declares this UTC offset.
 
     A viewer that trusts the file reads the offset as local_timestamp minus
     timestamp, so the two must agree with where the ride actually happened.
     """
-    found = {}
+    found: dict[int, tuple[int, str]] = {}
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if global_num != ACTIVITY or developer or size != 4:
             return
         if base_type & 0x1F != UINT32 or number not in (5, TIMESTAMP):
@@ -255,19 +299,19 @@ def set_zone(out, seconds):
     return True
 
 
-def seconds_zone(seconds):
+def seconds_zone(seconds: int) -> str:
     sign = '-' if seconds < 0 else '+'
     hours, minutes = divmod(abs(seconds) // 60, 60)
     return f'{sign}{hours}' + (f':{minutes:02d}' if minutes else '')
 
 
-def render(stamp, offset):
+def render(stamp: int, offset: int) -> str:
     utc = EPOCH + datetime.timedelta(seconds=stamp)
     local = utc + datetime.timedelta(seconds=offset)
     return f'{local:%Y-%m-%d %H:%M:%S} local / {utc:%Y-%m-%d %H:%M:%S} UTC'
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', help='FIT file to read')
     parser.add_argument('-o', '--out', help='output FIT file')

@@ -18,9 +18,18 @@ import statistics
 import struct
 import sys
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Sequence
 from itertools import pairwise
+from typing import Any
 
 from fitshift import RECORD, TIMESTAMP, crc16, walk
+
+# (lat, lon) in degrees.
+type Point = tuple[float, float]
+# (ride metres, route metres): where the ride's odometer sits along the route.
+type Anchor = tuple[float, float]
+# One record message: see read_records().
+type Record = dict[str, Any]
 
 EARTH_RADIUS = 6371000.0
 
@@ -73,7 +82,7 @@ SUMMARY_FIELDS = {
 }
 
 
-def haversine(first, second):
+def haversine(first: Point, second: Point) -> float:
     lat1, lon1 = first
     lat2, lon2 = second
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -86,20 +95,23 @@ def haversine(first, second):
     return 2 * EARTH_RADIUS * math.asin(math.sqrt(a))
 
 
-def read_route(path):
+def read_route(path: str) -> list[Point]:
     """Return the route's track points as [(lat, lon), ...]."""
     points = []
     for element in ElementTree.parse(path).iter():
         # Strip the GPX namespace: {http://www.topografix.com/GPX/1/1}trkpt.
         if element.tag.rpartition('}')[2] != 'trkpt':
             continue
-        points.append((float(element.get('lat')), float(element.get('lon'))))
+        lat, lon = element.get('lat'), element.get('lon')
+        if lat is None or lon is None:
+            raise ValueError(f'{path}: a track point has no lat/lon')
+        points.append((float(lat), float(lon)))
     if len(points) < 2:
         raise ValueError(f'{path}: need at least two track points')
     return points
 
 
-def read_elevations(path):
+def read_elevations(path: str) -> list[float] | None:
     """Return the route's <ele> per track point, or None if any is missing."""
     elevations = []
     for element in ElementTree.parse(path).iter():
@@ -115,7 +127,7 @@ def read_elevations(path):
     return elevations
 
 
-def measure(points):
+def measure(points: Sequence[Point]) -> list[float]:
     """Return cumulative distance along points, one entry per point."""
     cumulative = [0.0]
     for first, second in pairwise(points):
@@ -123,7 +135,9 @@ def measure(points):
     return cumulative
 
 
-def locate(points, cumulative, target):
+def locate(
+    points: Sequence[Point], cumulative: Sequence[float], target: float
+) -> Point:
     """Interpolate the position that lies target metres along the route."""
     index = bisect.bisect_right(cumulative, target) - 1
     index = max(0, min(index, len(points) - 2))
@@ -135,12 +149,19 @@ def locate(points, cumulative, target):
     return lat1 + (lat2 - lat1) * fraction, lon1 + (lon2 - lon1) * fraction
 
 
-def project(points, cumulative, fix, low, high):
+def project(
+    points: Sequence[Point],
+    cumulative: Sequence[float],
+    fix: Point,
+    low: float,
+    high: float,
+) -> tuple[float, float]:
     """Return (metres off route, metres along it) for the nearest point.
 
-    Only route segments that overlap [low, high] metres along are considered.
+    Only route segments that overlap [low, high] metres along are considered;
+    with none, the point is infinitely far off and nowhere along.
     """
-    best = (math.inf, None)
+    best = (math.inf, math.nan)
     first = max(0, bisect.bisect_right(cumulative, low) - 1)
     last = min(len(points) - 1, bisect.bisect_right(cumulative, high))
     # An equirectangular plane around the fix is exact enough at this scale.
@@ -162,7 +183,12 @@ def project(points, cumulative, fix, low, high):
     return best
 
 
-def anchor(records, points, cumulative, ratio=1.0):
+def anchor(
+    records: Sequence[Record],
+    points: Sequence[Point],
+    cumulative: Sequence[float],
+    ratio: float = 1.0,
+) -> list[Anchor]:
     """Return [(ride metres, route metres), ...] for the trusted fixes.
 
     A fix is trusted when it lies on the route, which rejects both the
@@ -196,7 +222,9 @@ def anchor(records, points, cumulative, ratio=1.0):
     return anchors
 
 
-def keep_real(records, points, cumulative):
+def keep_real(
+    records: Sequence[Record], points: Sequence[Point], cumulative: Sequence[float]
+) -> int:
     """Mark the real fixes that lie off the route kept; return how many.
 
     They are not anchors: an off-route fix has no place along the route.
@@ -213,7 +241,9 @@ def keep_real(records, points, cumulative):
     return kept
 
 
-def retime(times, distances, limit):
+def retime(
+    times: Sequence[int], distances: Sequence[float], limit: float
+) -> tuple[list[float], list[int], float]:
     """Return (distances rebuilt from the deltas that are a pace, jumps, dropped).
 
     Jamming inflates distance as well as moving the fix: a watch with no
@@ -253,7 +283,7 @@ def retime(times, distances, limit):
     return rebuilt, jumps, dropped
 
 
-def interpolate(anchors, distance):
+def interpolate(anchors: Sequence[Anchor], distance: float) -> float:
     """Map a ride distance to a route distance through the anchors.
 
     Past either end the nearest anchor's offset carries on unchanged.
@@ -268,7 +298,9 @@ def interpolate(anchors, distance):
     return route1 + (route2 - route1) * (distance - ride1) / (ride2 - ride1)
 
 
-def height(cumulative, elevations, target):
+def height(
+    cumulative: Sequence[float], elevations: Sequence[float], target: float
+) -> float:
     """Interpolate the route's elevation target metres along it."""
     index = bisect.bisect_right(cumulative, target) - 1
     index = max(0, min(index, len(cumulative) - 2))
@@ -278,7 +310,12 @@ def height(cumulative, elevations, target):
     return elevations[index] + (elevations[index + 1] - elevations[index]) * fraction
 
 
-def align(records, anchors, cumulative, elevations):
+def align(
+    records: Sequence[Record],
+    anchors: Sequence[Anchor],
+    cumulative: Sequence[float],
+    elevations: Sequence[float],
+) -> list[Anchor]:
     """Return anchors plus those the climbs pin down between them.
 
     Between trusted fixes the placement rests on the wheel sensor alone. The
@@ -293,11 +330,11 @@ def align(records, anchors, cumulative, elevations):
         if r['distance'] is not None and r['altitude'] is not None
     ]
     if not profile:
-        return anchors
+        return list(anchors)
     distances = [distance for distance, _ in profile]
     route_length = cumulative[-1]
 
-    def altitude(distance):
+    def altitude(distance: float) -> float:
         index = max(0, bisect.bisect_right(distances, distance) - 1)
         return profile[index][1]
 
@@ -337,13 +374,13 @@ def align(records, anchors, cumulative, elevations):
     # Keep only anchors that move forward on both axes, so the ride never
     # folds back on itself.
     merged = []
-    for ride, route in sorted(anchors + added):
+    for ride, route in sorted([*anchors, *added]):
         if not merged or (ride > merged[-1][0] and route > merged[-1][1]):
             merged.append((ride, route))
     return merged
 
 
-def read_records(data):
+def read_records(data: bytes) -> tuple[list[Record], int]:
     """Return (records, data_end).
 
     One record per record message, holding its distance in metres, its fix in
@@ -352,7 +389,7 @@ def read_records(data):
     """
     records = []
 
-    def start(global_num):
+    def start(global_num: int) -> None:
         if global_num != RECORD:
             return
         records.append(
@@ -368,7 +405,15 @@ def read_records(data):
             }
         )
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if global_num != RECORD or developer or not records:
             return
         current = records[-1]
@@ -411,7 +456,7 @@ def read_records(data):
     return records, end
 
 
-def summarize(data):
+def summarize(data: bytes) -> bytes:
     """Return data with lap and session positions taken from the records.
 
     A summary keeps the start, end and bounding box its device saw, so after
@@ -422,11 +467,19 @@ def summarize(data):
     fixes = []
     summaries = []
 
-    def start(global_num):
+    def start(global_num: int) -> None:
         if global_num in SUMMARY_FIELDS:
             summaries.append({'kind': global_num, 'start': None, 'fields': {}})
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if developer or size != 4:
             return
         if global_num == RECORD:
@@ -448,7 +501,7 @@ def summarize(data):
             current['fields'][number] = (pos, endian)
 
     end = walk(data, visit, start)
-    fixes = [
+    placed = [
         (stamp, lat, lon)
         for stamp, lat, lon in fixes
         if lat is not None and lon is not None
@@ -465,7 +518,7 @@ def summarize(data):
         # A lap runs until the next one starts; the session spans them all.
         later = [lap for lap in laps if lap > low]
         high = later[0] if summary['kind'] == LAP and later else math.inf
-        inside = [(lat, lon) for stamp, lat, lon in fixes if low <= stamp < high]
+        inside = [(lat, lon) for stamp, lat, lon in placed if low <= stamp < high]
         if not inside:
             continue
         lats = [lat for lat, _ in inside]
@@ -482,14 +535,14 @@ def summarize(data):
 
 
 def match(
-    data,
-    points,
-    scale=True,
-    gaps_only=False,
-    elevations=None,
-    broken_only=False,
-    limit=None,
-):
+    data: bytes,
+    points: Sequence[Point],
+    scale: bool = True,
+    gaps_only: bool = False,
+    elevations: Sequence[float] | None = None,
+    broken_only: bool = False,
+    limit: float | None = None,
+) -> tuple[list[Record], list[Anchor], list[float], dict[str, Any]]:
     """Return (records, anchors, cumulative, stats) for placing the ride.
 
     gaps_only marks every fix that lies on the route as trusted and anchors
@@ -569,15 +622,15 @@ def match(
 
 
 def graft(
-    data,
-    points,
-    scale=True,
-    reverse=False,
-    gaps_only=False,
-    elevations=None,
-    broken_only=False,
-    limit=None,
-):
+    data: bytes,
+    points: Sequence[Point],
+    scale: bool = True,
+    reverse: bool = False,
+    gaps_only: bool = False,
+    elevations: Sequence[float] | None = None,
+    broken_only: bool = False,
+    limit: float | None = None,
+) -> tuple[bytes, dict[str, Any]]:
     """Return a copy of data with record positions taken from the route."""
     if reverse:
         points = points[::-1]
@@ -604,15 +657,15 @@ def graft(
 
 
 def rebuild(
-    base_path,
-    points,
-    scale=True,
-    reverse=False,
-    gaps_only=False,
-    elevations=None,
-    broken_only=False,
-    limit=None,
-):
+    base_path: str,
+    points: Sequence[Point],
+    scale: bool = True,
+    reverse: bool = False,
+    gaps_only: bool = False,
+    elevations: Sequence[float] | None = None,
+    broken_only: bool = False,
+    limit: float | None = None,
+) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with a position written into every record.
 
     For a base recorded with the GPS off, wholly or in part: those records
@@ -625,6 +678,7 @@ def rebuild(
     from fit_tool.definition_message import DefinitionMessage
     from fit_tool.fit_file import FitFile
     from fit_tool.fit_file_builder import FitFileBuilder
+    from fit_tool.profile.messages.record_message import RecordMessage
 
     from fitgraft import set_position
 
@@ -641,7 +695,7 @@ def rebuild(
     messages = [
         r.message for r in base.records if not isinstance(r.message, DefinitionMessage)
     ]
-    decoded = [m for m in messages if type(m).__name__ == 'RecordMessage']
+    decoded = [m for m in messages if isinstance(m, RecordMessage)]
     # The match was made on the file's own bytes; pair it with fit_tool's
     # decode record by record.
     if len(decoded) != len(records):
@@ -667,7 +721,7 @@ def rebuild(
     return summarize(builder.build().to_bytes()), stats
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', help='FIT file with the good sensor data')
     parser.add_argument('route', help='GPX file with the route to follow')

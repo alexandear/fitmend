@@ -587,6 +587,12 @@ them; a regression fails them.
 
     uv run ruff format .
     uv run ruff check .
+    uv run --extra rebuild ty check
+
+Every function, in the tools and the suite alike, carries type annotations,
+and `ty` checks them; it needs the `rebuild` extra to see `fit_tool`. A
+parameter a function only reads is a `Sequence` rather than a `list`, so the
+timestamps, which are integers, pass where a float series is expected.
 
 `ruff` formats and lints, configured in `pyproject.toml`: single quotes, 88
 columns, and most of the rule families that do not argue with how the code is
@@ -611,7 +617,7 @@ values stay a grid, which is how they are checked against the FIT spec.
 
 ## Hook
 
-`.githooks/pre-commit` runs those two commands and the suite. It is checked
+`.githooks/pre-commit` runs those three commands and the suite. It is checked
 in rather than left in `.git/hooks`, so a clone gets it by pointing git at the
 directory, once:
 

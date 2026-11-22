@@ -16,6 +16,8 @@ jobs:
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - run: uv run --locked ruff format --check .
       - run: uv run --locked ruff check .
+      # --extra rebuild so ty can resolve fit_tool in fitgraft.py.
+      - run: uv run --locked --extra rebuild ty check
 
   test:
     runs-on: ubuntu-latest

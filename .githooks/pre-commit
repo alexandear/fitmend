@@ -1,6 +1,6 @@
 #!/bin/sh
-# Refuse a commit that ruff would reformat, that ruff lints, or that the
-# suite fails. Enable it once per clone:
+# Refuse a commit that ruff would reformat, that ruff lints, that ty finds
+# a type error in, or that the suite fails. Enable it once per clone:
 #
 #     git config core.hooksPath .githooks
 #
@@ -17,4 +17,5 @@ if ! uv run ruff format --check .; then
 fi
 
 uv run ruff check .
-uv run python -m unittest
+uv run --extra rebuild ty check
+uv run --extra rebuild python -m unittest

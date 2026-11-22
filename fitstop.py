@@ -22,7 +22,9 @@ import statistics
 import struct
 import sys
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Sequence
 from itertools import pairwise
+from typing import Any
 
 from fitpace import (
     DISTANCE,
@@ -30,6 +32,8 @@ from fitpace import (
     HEART_RATE,
     SPEED,
     TIMESTAMP,
+    Fields,
+    Message,
     minutes,
     read_messages,
     rewrite,
@@ -46,7 +50,17 @@ STOP = 5
 JUMP = 25.0 / 3.6
 
 
-def read_run(data):
+def read_run(
+    data: bytes,
+) -> tuple[
+    list[Message],
+    int,
+    list[Fields],
+    list[int],
+    list[float],
+    list[float],
+    list[int | None],
+]:
     """Return (messages, end, records, times, distances, speeds, heart)."""
     messages, end = read_messages(data)
     records = [
@@ -68,7 +82,12 @@ def read_run(data):
     return messages, end, records, times, distances, speeds, heart
 
 
-def stops(times, distances, gap=STOP, limit=JUMP):
+def stops(
+    times: Sequence[int],
+    distances: Sequence[float],
+    gap: float = STOP,
+    limit: float = JUMP,
+) -> list[tuple[int, int]]:
     """Return the record windows whose distance was never covered.
 
     A window is (first, last): first is the last record before the pause and
@@ -90,7 +109,9 @@ def stops(times, distances, gap=STOP, limit=JUMP):
     return windows
 
 
-def destop(data, length=None, gap=STOP, limit=JUMP):
+def destop(
+    data: bytes, length: float | None = None, gap: float = STOP, limit: float = JUMP
+) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with the standing-still distance taken out.
 
     length is the route's length in metres, which the run is scaled onto
@@ -103,7 +124,7 @@ def destop(data, length=None, gap=STOP, limit=JUMP):
 
     deltas = [recorded[0], *(b - a for a, b in pairwise(recorded))]
     stopped = set()
-    report = []
+    report: list[dict[str, Any]] = []
     for first, last in windows:
         beats = [rate for rate in heart[first : last + 1] if rate]
         report.append(
@@ -155,7 +176,7 @@ def destop(data, length=None, gap=STOP, limit=JUMP):
     return out, stats
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', help='FIT file whose watch paused and jumped')
     parser.add_argument(

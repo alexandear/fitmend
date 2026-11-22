@@ -29,7 +29,9 @@ import bisect
 import struct
 import sys
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Sequence
 from itertools import pairwise
+from typing import Any
 
 from fitpace import (
     DISTANCE,
@@ -44,7 +46,7 @@ from fitpace import (
     retotal,
     rewrite,
 )
-from fitroute import haversine, measure, read_elevations, read_route
+from fitroute import Point, haversine, measure, read_elevations, read_route
 from fitshift import RECORD
 
 # A descent is back at the foot of the climb once it is this close to it.
@@ -52,7 +54,7 @@ from fitshift import RECORD
 RETURN = 25.0
 
 
-def nearest(cumulative, metres):
+def nearest(cumulative: Sequence[float], metres: float) -> int:
     """Return the index of the route point nearest metres along it."""
     index = bisect.bisect_left(cumulative, metres)
     if index <= 0:
@@ -63,14 +65,14 @@ def nearest(cumulative, metres):
     return index - 1 if metres - before <= after - metres else index
 
 
-def returns(points, foot, ahead):
+def returns(points: Sequence[Point], foot: int, ahead: int) -> int:
     """Return the first index past ahead where the route is back at the foot.
 
     The nearest point of that approach, not the first one inside RETURN, so a
     route whose descent misses its own ascent by a few metres still lands on
     the foot it left.
     """
-    best = None
+    best: tuple[float, int] | None = None
     for index in range(ahead + 1, len(points)):
         gap = haversine(points[index], points[foot])
         if gap > RETURN:
@@ -86,7 +88,13 @@ def returns(points, foot, ahead):
     return best[1]
 
 
-def find_hill(points, cumulative, elevations, low, high):
+def find_hill(
+    points: Sequence[Point],
+    cumulative: Sequence[float],
+    elevations: Sequence[float],
+    low: float,
+    high: float,
+) -> tuple[int, int, int]:
     """Return (foot, apex, back): the climb's foot and top, and the descent's end.
 
     low and high are metres along the route: where the climb starts, and a
@@ -103,12 +111,14 @@ def find_hill(points, cumulative, elevations, low, high):
     return foot, apex, back
 
 
-def splice(values, foot, back, count):
+def splice[T](values: list[T], foot: int, back: int, count: int) -> list[T]:
     """Return values with the block values[foot:back] repeated count times."""
     return values[:foot] + values[foot:back] * count + values[back:]
 
 
-def spans(cumulative, foot, apex, back, count):
+def spans(
+    cumulative: Sequence[float], foot: int, apex: int, back: int, count: int
+) -> list[tuple[float, float]]:
     """Return each lap's (low, high) metres along the repeated route.
 
     One for the warm-up, a climb and a descent for every repeat, and one for
@@ -124,7 +134,9 @@ def spans(cumulative, foot, apex, back, count):
     return [(cumulative[a], cumulative[b]) for a, b in pairwise(edges)]
 
 
-def relap(data, spans):
+def relap(
+    data: bytes, spans: Sequence[tuple[float, float]]
+) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with every lap's distance rescaled onto its span.
 
     Each lap keeps the shape of the pace it recorded and only its scale
@@ -195,7 +207,9 @@ def relap(data, spans):
     return out, stats
 
 
-def write_route(path, points, elevations):
+def write_route(
+    path: str, points: Sequence[Point], elevations: Sequence[float]
+) -> None:
     """Write the repeated route out as a GPX track."""
     with open(path, 'w', encoding='utf-8') as out:
         out.write(
@@ -211,7 +225,7 @@ def write_route(path, points, elevations):
         out.write('  </trkseg></trk>\n</gpx>\n')
 
 
-def name(index, count):
+def name(index: int, count: int) -> str:
     if index == 0:
         return 'warm-up'
     if index == 2 * count + 1:
@@ -220,7 +234,7 @@ def name(index, count):
     return f'{"descent" if leg else "climb"} {repeat + 1}'
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', help='FIT file the session was recorded to')
     parser.add_argument('route', help='GPX file whose route climbs the hill once')

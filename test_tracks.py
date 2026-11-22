@@ -30,6 +30,7 @@ import os
 import struct
 import tempfile
 import unittest
+from collections.abc import Callable, Sequence
 from itertools import pairwise
 
 import fithills
@@ -54,42 +55,67 @@ LIMIT = 20 / 3.6
 FIT_TOOL = importlib.util.find_spec('fit_tool') is not None
 
 
-def read(path):
+def read(path: str) -> bytes:
     with open(path, 'rb') as source:
         return source.read()
 
 
-def crc_is_right(data):
+def read_elevations(path: str) -> list[float]:
+    elevations = fitroute.read_elevations(path)
+    if elevations is None:
+        raise AssertionError(f'{path}: a track point has no <ele>')
+    return elevations
+
+
+def crc_is_right(data: bytes) -> bool:
     return struct.unpack('<H', data[-2:])[0] == fitshift.crc16(data[:-2])
 
 
-def message_counts(data):
+def message_counts(data: bytes) -> collections.Counter[int]:
     """How many data messages of each global number the file holds."""
-    counted = collections.Counter()
+    counted: collections.Counter[int] = collections.Counter()
 
-    def start(global_num):
+    def start(global_num: int) -> None:
         counted[global_num] += 1
 
     fitshift.walk(data, lambda *args: None, start)
     return counted
 
 
-def endians(data):
+def endians(data: bytes) -> set[str]:
     """The byte orders the file's definition messages declared."""
-    found = set()
+    found: set[str] = set()
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         found.add(endian)
 
     fitshift.walk(data, visit)
     return found
 
 
-def field_bytes(data, keep):
+def field_bytes(
+    data: bytes, keep: Callable[[int, int, int, int, bool], bool]
+) -> set[int]:
     """The offsets of every field keep() accepts, plus the file CRC's own."""
-    found = set()
+    found: set[int] = set()
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if keep(global_num, number, base_type, size, developer):
             found.update(range(pos, pos + size))
 
@@ -98,12 +124,14 @@ def field_bytes(data, keep):
     return found
 
 
-def rewritten(before, after):
+def rewritten(before: bytes, after: bytes) -> set[int]:
     """The offsets whose byte the tool changed."""
     return {i for i, (a, b) in enumerate(zip(before, after, strict=True)) if a != b}
 
 
-def is_position(global_num, number, base_type, size, developer):
+def is_position(
+    global_num: int, number: int, base_type: int, size: int, developer: bool
+) -> bool:
     """The counterpart of fitshift.is_date_time for what fitroute may write."""
     if developer or size != 4 or base_type & 0x1F != fitroute.SINT32:
         return False
@@ -112,10 +140,18 @@ def is_position(global_num, number, base_type, size, developer):
     return number in fitroute.SUMMARY_FIELDS.get(global_num, ())
 
 
-def invalid_dates(data):
-    found = []
+def invalid_dates(data: bytes) -> list[tuple[int, int]]:
+    found: list[tuple[int, int]] = []
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if not fitshift.is_date_time(global_num, number, base_type, size, developer):
             return
         if struct.unpack(endian + 'I', data[pos : pos + 4])[0] == fitshift.INVALID:
@@ -125,7 +161,9 @@ def invalid_dates(data):
     return found
 
 
-def furthest_off_route(data, points, cumulative):
+def furthest_off_route(
+    data: bytes, points: Sequence[fitroute.Point], cumulative: Sequence[float]
+) -> float:
     """How far from the route the furthest fix in data lies, in metres."""
     records, _ = fitroute.read_records(data)
     return max(
@@ -135,11 +173,19 @@ def furthest_off_route(data, points, cumulative):
     )
 
 
-def positions(data, global_num, number):
+def positions(data: bytes, global_num: int, number: int) -> list[float]:
     """Every value of one sint32 position field, in degrees."""
-    found = []
+    found: list[float] = []
 
-    def visit(kind, field, base_type, endian, pos, size, developer):
+    def visit(
+        kind: int,
+        field: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if kind == global_num and field == number and size == 4:
             value = struct.unpack_from(endian + 'i', data, pos)[0]
             found.append(value / fitroute.SEMICIRCLES)
@@ -148,11 +194,19 @@ def positions(data, global_num, number):
     return found
 
 
-def total_distances(data, global_num):
+def total_distances(data: bytes, global_num: int) -> list[int]:
     """Every lap or session total_distance in the file, in centimetres."""
-    found = []
+    found: list[int] = []
 
-    def visit(kind, number, base_type, endian, pos, size, developer):
+    def visit(
+        kind: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if kind == global_num and number == fitpace.TOTAL_DISTANCE and size == 4:
             found.append(struct.unpack_from(endian + 'I', data, pos)[0])
 
@@ -160,12 +214,14 @@ def total_distances(data, global_num):
     return found
 
 
-def total_distance(data, global_num):
+def total_distance(data: bytes, global_num: int) -> int:
     """The first lap or session total_distance in the file, in centimetres."""
     return total_distances(data, global_num)[0]
 
 
-def is_pace(global_num, number, base_type, size, developer):
+def is_pace(
+    global_num: int, number: int, base_type: int, size: int, developer: bool
+) -> bool:
     """What fitpace and fithills may write: distance, speed and their totals."""
     if developer:
         return False
@@ -180,7 +236,7 @@ def is_pace(global_num, number, base_type, size, developer):
     return False
 
 
-def speeds(data):
+def speeds(data: bytes) -> list[float]:
     """Every record's speed, in metres per second."""
     messages, _ = fitpace.read_messages(data)
     return [
@@ -190,7 +246,7 @@ def speeds(data):
     ]
 
 
-def lap_starts(data):
+def lap_starts(data: bytes) -> list[int]:
     """The index of the first record of every lap."""
     messages, _ = fitpace.read_messages(data)
     times = [
@@ -205,25 +261,25 @@ def lap_starts(data):
     ]
 
 
-def sensors(data):
+def sensors(data: bytes) -> list[tuple[int, float, float | None]]:
     """The streams every tool here promises to leave alone."""
     records, _ = fitroute.read_records(data)
     return [(r['stamp'], r['distance'], r['altitude']) for r in records]
 
 
 class Parse(unittest.TestCase):
-    def test_a_real_export_is_read_to_its_last_byte(self):
+    def test_a_real_export_is_read_to_its_last_byte(self) -> None:
         for path in (JAMMED, BLIND):
             with self.subTest(file=os.path.basename(path)):
                 data = read(path)
                 self.assertEqual(fitshift.walk(data, lambda *args: None), len(data) - 2)
                 self.assertTrue(crc_is_right(data))
 
-    def test_a_file_can_be_written_either_way_round(self):
+    def test_a_file_can_be_written_either_way_round(self) -> None:
         self.assertEqual(endians(read(JAMMED)), {'>'})
         self.assertEqual(endians(read(BLIND)), {'<'})
 
-    def test_a_private_message_type_is_walked_like_any_other(self):
+    def test_a_private_message_type_is_walked_like_any_other(self) -> None:
         counted = message_counts(read(JAMMED))
         self.assertEqual(counted[fitshift.RECORD], 2708)
         # No profile documents 160, 216, 312 or 313: they are Garmin's own,
@@ -232,25 +288,25 @@ class Parse(unittest.TestCase):
 
 
 class Shift(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.data = read(JAMMED)
         self.first, self.last, window, self.offset = fitshift.survey(self.data)
         # The margin main() allows, for a local_timestamp that falls on the
         # far side of the UTC day from the values it sits between.
         self.window = (window[0] - DAY, window[1] + DAY)
 
-    def test_it_reads_the_span_and_the_wearers_offset(self):
+    def test_it_reads_the_span_and_the_wearers_offset(self) -> None:
         self.assertEqual(self.last - self.first, 2707)
         self.assertEqual(self.offset, 3 * 3600)
 
-    def test_the_whole_activity_moves_together(self):
+    def test_the_whole_activity_moves_together(self) -> None:
         out, moved = fitshift.shift(self.data, DAY, self.window)
         first, last, _, offset = fitshift.survey(out)
         self.assertEqual((first, last), (self.first + DAY, self.last + DAY))
         self.assertEqual(offset, self.offset)
         self.assertEqual(moved, 2774)
 
-    def test_nothing_but_the_dates_is_touched(self):
+    def test_nothing_but_the_dates_is_touched(self) -> None:
         out, _ = fitshift.shift(self.data, DAY, self.window)
         self.assertEqual(len(out), len(self.data))
         self.assertLessEqual(
@@ -258,19 +314,19 @@ class Shift(unittest.TestCase):
         )
         self.assertTrue(crc_is_right(out))
 
-    def test_an_invalid_date_is_no_date_at_all(self):
+    def test_an_invalid_date_is_no_date_at_all(self) -> None:
         out, _ = fitshift.shift(self.data, DAY, self.window)
         self.assertEqual(len(invalid_dates(self.data)), 19)
         self.assertEqual(invalid_dates(out), invalid_dates(self.data))
 
-    def test_a_zone_rewrites_the_offset_the_file_declares(self):
+    def test_a_zone_rewrites_the_offset_the_file_declares(self) -> None:
         out, _ = fitshift.shift(self.data, 0, self.window, zone=-5 * 3600)
         self.assertEqual(fitshift.survey(out)[3], -5 * 3600)
 
 
 class Graft(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.data = read(JAMMED)
         cls.points = fitroute.read_route(JAMMED_ROUTE)
         cls.cumulative = fitroute.measure(cls.points)
@@ -278,7 +334,7 @@ class Graft(unittest.TestCase):
             cls.data, cls.points, broken_only=True, limit=LIMIT
         )
 
-    def test_a_spoofed_fix_is_neither_kept_nor_trusted(self):
+    def test_a_spoofed_fix_is_neither_kept_nor_trusted(self) -> None:
         # Every fix the watch recorded is a continent away, so not one of
         # them anchors the match and not one is kept as real.
         self.assertEqual(self.stats['anchors'], 0)
@@ -286,20 +342,20 @@ class Graft(unittest.TestCase):
         self.assertEqual(self.stats['placed'], 162)
         self.assertEqual(self.stats['skipped'], 2546)
 
-    def test_every_placed_fix_lands_on_the_route(self):
+    def test_every_placed_fix_lands_on_the_route(self) -> None:
         self.assertLess(furthest_off_route(self.out, self.points, self.cumulative), 0.1)
 
-    def test_nothing_but_the_positions_is_touched(self):
+    def test_nothing_but_the_positions_is_touched(self) -> None:
         self.assertEqual(len(self.out), len(self.data))
         self.assertLessEqual(
             rewritten(self.data, self.out), field_bytes(self.data, is_position)
         )
         self.assertTrue(crc_is_right(self.out))
 
-    def test_the_sensors_are_left_as_recorded(self):
+    def test_the_sensors_are_left_as_recorded(self) -> None:
         self.assertEqual(sensors(self.out), sensors(self.data))
 
-    def test_the_summaries_follow_the_records(self):
+    def test_the_summaries_follow_the_records(self) -> None:
         records, _ = fitroute.read_records(self.out)
         fixes = [r['fix'] for r in records if r['fix'] is not None]
         session = fitroute.SESSION
@@ -313,7 +369,7 @@ class Graft(unittest.TestCase):
             positions(self.out, session, 31)[0], min(lat for lat, _ in fixes)
         )
 
-    def test_the_odometer_the_match_runs_on_is_rebuilt(self):
+    def test_the_odometer_the_match_runs_on_is_rebuilt(self) -> None:
         *_, recorded = fitroute.match(self.data, self.points)
         # The watch measured the run with the GPS it was being fed, so its
         # total is most of a second run longer than the route.
@@ -327,15 +383,15 @@ class Graft(unittest.TestCase):
 
 class Hills(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.data = read(BLIND)
         cls.points = fitroute.read_route(BLIND_ROUTE)
-        cls.elevations = fitroute.read_elevations(BLIND_ROUTE)
+        cls.elevations = read_elevations(BLIND_ROUTE)
 
-    def test_the_route_carries_an_elevation_for_every_point(self):
+    def test_the_route_carries_an_elevation_for_every_point(self) -> None:
         self.assertEqual(len(self.elevations), len(self.points))
 
-    def test_a_climb_anchors_the_middle_of_a_blind_run(self):
+    def test_a_climb_anchors_the_middle_of_a_blind_run(self) -> None:
         *_, plain = fitroute.match(self.data, self.points)
         self.assertEqual(plain['hills'], 0)
 
@@ -353,11 +409,11 @@ class Hills(unittest.TestCase):
 
 class Pace(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.blind_length = fitroute.measure(fitroute.read_route(BLIND_ROUTE))[-1]
         cls.jammed_length = fitroute.measure(fitroute.read_route(JAMMED_ROUTE))[-1]
 
-    def test_a_heart_rate_model_finishes_on_the_route(self):
+    def test_a_heart_rate_model_finishes_on_the_route(self) -> None:
         data = read(BLIND)
         out, stats = fitpace.pace(data, 3000.0, self.blind_length)
 
@@ -372,7 +428,7 @@ class Pace(unittest.TestCase):
         self.assertAlmostEqual(paced[-1], self.blind_length, places=1)
         self.assertEqual(paced, sorted(paced))
 
-    def test_the_totals_follow_the_records(self):
+    def test_the_totals_follow_the_records(self) -> None:
         data = read(BLIND)
         out, _ = fitpace.pace(data, 3000.0, self.blind_length)
         self.assertEqual(
@@ -382,7 +438,7 @@ class Pace(unittest.TestCase):
             total_distance(out, fitpace.LAP), total_distance(data, fitpace.LAP)
         )
 
-    def test_the_jammed_odometer_is_replaced_by_the_pace_that_was_left(self):
+    def test_the_jammed_odometer_is_replaced_by_the_pace_that_was_left(self) -> None:
         data = read(JAMMED)
         out, stats = fitpace.unjam(data, LIMIT, self.jammed_length)
 
@@ -404,12 +460,12 @@ class Rescale(unittest.TestCase):
     """fitpace --scale: one ratio for every record of a run measured short."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.data = read(BLIND)
         cls.length = fitroute.measure(fitroute.read_route(BLIND_ROUTE))[-1]
         cls.out, cls.stats = fitpace.rescale(cls.data, cls.length)
 
-    def test_the_run_lands_on_the_route(self):
+    def test_the_run_lands_on_the_route(self) -> None:
         self.assertAlmostEqual(self.stats['ratio'], 1.04217, places=5)
         paced = [distance for _, distance, _ in sensors(self.out)]
         self.assertAlmostEqual(paced[-1], self.length, places=1)
@@ -417,7 +473,7 @@ class Rescale(unittest.TestCase):
             total_distance(self.out, fitpace.SESSION), round(self.length * 100)
         )
 
-    def test_every_record_moves_by_the_same_ratio(self):
+    def test_every_record_moves_by_the_same_ratio(self) -> None:
         recorded = [distance for _, distance, _ in sensors(self.data)]
         paced = [distance for _, distance, _ in sensors(self.out)]
         for before, after in zip(recorded, paced, strict=True):
@@ -425,14 +481,14 @@ class Rescale(unittest.TestCase):
         for before, after in zip(speeds(self.data), speeds(self.out), strict=True):
             self.assertAlmostEqual(after, before * self.stats['ratio'], delta=0.001)
 
-    def test_nothing_but_distance_and_speed_is_touched(self):
+    def test_nothing_but_distance_and_speed_is_touched(self) -> None:
         self.assertEqual(len(self.out), len(self.data))
         self.assertLessEqual(
             rewritten(self.data, self.out), field_bytes(self.data, is_pace)
         )
         self.assertTrue(crc_is_right(self.out))
 
-    def test_a_big_endian_run_measured_long_shrinks_onto_its_route(self):
+    def test_a_big_endian_run_measured_long_shrinks_onto_its_route(self) -> None:
         data = read(JAMMED)
         length = fitroute.measure(fitroute.read_route(JAMMED_ROUTE))[-1]
         out, stats = fitpace.rescale(data, length)
@@ -450,30 +506,30 @@ class Grade(unittest.TestCase):
     """
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.data = read(BLIND)
         cls.points = fitroute.read_route(BLIND_ROUTE)
-        cls.elevations = fitroute.read_elevations(BLIND_ROUTE)
+        cls.elevations = read_elevations(BLIND_ROUTE)
         cls.length = fitroute.measure(cls.points)[-1]
         cls.splits = [1000.0 * km for km in range(1, 8)]
         cls.out, _ = fitpace.grade(cls.data, cls.points, cls.elevations)
         cls.split, _ = fitpace.grade(cls.data, cls.points, cls.elevations, cls.splits)
 
-    def test_the_run_lands_on_the_route(self):
+    def test_the_run_lands_on_the_route(self) -> None:
         for out in (self.out, self.split):
             paced = [distance for _, distance, _ in sensors(out)]
             self.assertEqual(paced[0], 0)
             self.assertAlmostEqual(paced[-1], self.length, places=1)
             self.assertEqual(paced, sorted(paced))
 
-    def test_the_time_and_the_altimeter_are_left_as_recorded(self):
+    def test_the_time_and_the_altimeter_are_left_as_recorded(self) -> None:
         for out in (self.out, self.split):
             self.assertEqual(
                 [(stamp, altitude) for stamp, _, altitude in sensors(out)],
                 [(stamp, altitude) for stamp, _, altitude in sensors(self.data)],
             )
 
-    def test_nothing_but_distance_and_speed_is_touched(self):
+    def test_nothing_but_distance_and_speed_is_touched(self) -> None:
         for out in (self.out, self.split):
             self.assertEqual(len(out), len(self.data))
             self.assertLessEqual(
@@ -481,23 +537,23 @@ class Grade(unittest.TestCase):
             )
             self.assertTrue(crc_is_right(out))
 
-    def test_a_split_pins_the_lap_press_to_the_route(self):
+    def test_a_split_pins_the_lap_press_to_the_route(self) -> None:
         paced = [distance for _, distance, _ in sensors(self.split)]
         starts = lap_starts(self.split)
         self.assertEqual(len(starts), len(self.splits) + 1)
         for start, split in zip(starts[1:], self.splits, strict=True):
             self.assertAlmostEqual(paced[start], split, places=1)
 
-    def test_the_lap_totals_are_the_spans(self):
+    def test_the_lap_totals_are_the_spans(self) -> None:
         bounds = [0.0, *self.splits, self.length]
         self.assertEqual(
             total_distances(self.split, fitpace.LAP),
             [round((high - low) * 100) for low, high in pairwise(bounds)],
         )
 
-    def test_a_split_needs_a_lap_for_each_side(self):
+    def test_a_split_needs_a_lap_for_each_side(self) -> None:
         points = fitroute.read_route(JAMMED_ROUTE)
-        elevations = fitroute.read_elevations(JAMMED_ROUTE)
+        elevations = read_elevations(JAMMED_ROUTE)
         with self.assertRaisesRegex(ValueError, '1 splits need 2 laps'):
             fitpace.grade(read(JAMMED), points, elevations, [5000.0])
 
@@ -512,20 +568,20 @@ class Relap(unittest.TestCase):
     """
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.data = read(BLIND)
         length = fitroute.measure(fitroute.read_route(BLIND_ROUTE))[-1]
         cls.spans = list(pairwise([0.0, *(1000.0 * km for km in range(1, 8)), length]))
         cls.out, cls.stats = fithills.relap(cls.data, cls.spans)
 
-    def test_each_lap_starts_where_its_span_does(self):
+    def test_each_lap_starts_where_its_span_does(self) -> None:
         paced = [distance for _, distance, _ in sensors(self.out)]
         for start, (low, _) in zip(lap_starts(self.out), self.spans, strict=True):
             self.assertAlmostEqual(paced[start], low, places=1)
         self.assertAlmostEqual(paced[-1], self.spans[-1][1], places=1)
         self.assertEqual(paced, sorted(paced))
 
-    def test_a_lap_keeps_the_shape_of_the_pace_it_recorded(self):
+    def test_a_lap_keeps_the_shape_of_the_pace_it_recorded(self) -> None:
         recorded = [distance for _, distance, _ in sensors(self.data)]
         paced = [distance for _, distance, _ in sensors(self.out)]
         starts = [*lap_starts(self.out), len(recorded)]
@@ -540,21 +596,21 @@ class Relap(unittest.TestCase):
                     delta=0.01,
                 )
 
-    def test_the_lap_totals_tile_the_route(self):
+    def test_the_lap_totals_tile_the_route(self) -> None:
         self.assertEqual(
             total_distances(self.out, fitpace.LAP),
             [round((high - low) * 100) for low, high in self.spans],
         )
         self.assertEqual(self.stats['records'], 2517)
 
-    def test_nothing_but_distance_and_speed_is_touched(self):
+    def test_nothing_but_distance_and_speed_is_touched(self) -> None:
         self.assertEqual(len(self.out), len(self.data))
         self.assertLessEqual(
             rewritten(self.data, self.out), field_bytes(self.data, is_pace)
         )
         self.assertTrue(crc_is_right(self.out))
 
-    def test_a_run_with_too_few_laps_is_refused(self):
+    def test_a_run_with_too_few_laps_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, '3 repeats need 8 laps'):
             fithills.relap(read(JAMMED), self.spans)
 
@@ -569,7 +625,7 @@ class Destop(unittest.TestCase):
     test_fitmend.Destop, over bytes.
     """
 
-    def test_pauses_the_watch_was_honest_about_are_left_alone(self):
+    def test_pauses_the_watch_was_honest_about_are_left_alone(self) -> None:
         data = read(BLIND)
         *_, times, distances, _, _ = fitstop.read_run(data)
         pauses = [
@@ -582,7 +638,7 @@ class Destop(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no pause'):
             fitstop.destop(data)
 
-    def test_a_jammed_run_s_jumps_are_not_behind_a_pause(self):
+    def test_a_jammed_run_s_jumps_are_not_behind_a_pause(self) -> None:
         data = read(JAMMED)
         *_, times, distances, _, _ = fitstop.read_run(data)
         # Its 92 jumps are fitpace.unjam's: the watch never stopped recording,
@@ -604,7 +660,7 @@ class Valid(unittest.TestCase):
     which is why it is covered here rather than in test_fitmend.py.
     """
 
-    def test_a_fix_is_a_place_on_earth(self):
+    def test_a_fix_is_a_place_on_earth(self) -> None:
         import fitgraft
 
         self.assertTrue(fitgraft.is_valid(50.0, 30.0))
@@ -623,7 +679,7 @@ class Rebuild(unittest.TestCase):
     """The two paths that re-encode: fitroute --rebuild and fitgraft."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         import fitgraft
 
         cls.fitgraft = fitgraft
@@ -645,11 +701,11 @@ class Rebuild(unittest.TestCase):
             with open(path, 'wb') as target:
                 target.write(content)
 
-    def fixes(self, path):
+    def fixes(self, path: str) -> list[fitroute.Point | None]:
         records, _ = fitroute.read_records(read(path))
         return [r['fix'] for r in records]
 
-    def test_a_record_written_without_a_position_gets_one(self):
+    def test_a_record_written_without_a_position_gets_one(self) -> None:
         before, _ = fitroute.read_records(self.data)
         self.assertEqual([r for r in before if r['lat'] is not None], [])
         self.assertEqual(self.stats['placed'], 2517)
@@ -660,7 +716,7 @@ class Rebuild(unittest.TestCase):
         self.assertEqual([r for r in after if r['fix'] is None], [])
         self.assertLess(furthest_off_route(self.out, self.points, self.cumulative), 0.1)
 
-    def test_rebuilding_a_file_already_on_the_route_keeps_its_fixes(self):
+    def test_rebuilding_a_file_already_on_the_route_keeps_its_fixes(self) -> None:
         # The second pass has the positions the first one wrote, and they all
         # lie on the route, so broken_only places nothing again.
         out, stats = fitroute.rebuild(self.rebuilt_path, self.points, broken_only=True)
@@ -669,14 +725,14 @@ class Rebuild(unittest.TestCase):
         records, _ = fitroute.read_records(out)
         self.assertEqual([r['fix'] for r in records], self.fixes(self.rebuilt_path))
 
-    def test_the_re_encoded_file_still_parses(self):
+    def test_the_re_encoded_file_still_parses(self) -> None:
         self.assertEqual(fitshift.walk(self.out, lambda *args: None), len(self.out) - 2)
         self.assertTrue(crc_is_right(self.out))
 
-    def test_the_sensors_survive_the_re_encode(self):
+    def test_the_sensors_survive_the_re_encode(self) -> None:
         self.assertEqual(sensors(self.out), sensors(self.data))
 
-    def test_a_donor_fills_a_base_that_has_no_position_field(self):
+    def test_a_donor_fills_a_base_that_has_no_position_field(self) -> None:
         stats = self.fitgraft.graft(BLIND, self.donor_path, self.out_path)
         self.assertEqual(
             stats,
@@ -691,7 +747,7 @@ class Rebuild(unittest.TestCase):
         self.assertEqual(self.fixes(self.out_path), self.fixes(self.donor_path))
         self.assertEqual(sensors(read(self.out_path)), sensors(self.data))
 
-    def test_a_donor_recorded_on_another_day_matches_nothing(self):
+    def test_a_donor_recorded_on_another_day_matches_nothing(self) -> None:
         # fitgraft pairs the two files by timestamp alone, so a donor whose
         # every timestamp is a day out has nothing to give.
         donor = read(self.donor_path)
@@ -706,7 +762,7 @@ class Rebuild(unittest.TestCase):
         self.assertEqual(stats['filled'], 0)
         self.assertEqual(stats['replaced'], 0)
 
-    def test_gaps_only_keeps_the_fixes_the_base_already_has(self):
+    def test_gaps_only_keeps_the_fixes_the_base_already_has(self) -> None:
         stats = self.fitgraft.graft(
             self.rebuilt_path, self.donor_path, self.out_path, gaps_only=True
         )
@@ -714,7 +770,7 @@ class Rebuild(unittest.TestCase):
         self.assertEqual(stats['replaced'], 0)
         self.assertEqual(self.fixes(self.out_path), self.fixes(self.rebuilt_path))
 
-    def test_without_it_every_fix_comes_from_the_donor(self):
+    def test_without_it_every_fix_comes_from_the_donor(self) -> None:
         stats = self.fitgraft.graft(self.rebuilt_path, self.donor_path, self.out_path)
         self.assertEqual(stats['replaced'], 2517)
         self.assertEqual(self.fixes(self.out_path), self.fixes(self.donor_path))

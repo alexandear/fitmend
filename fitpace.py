@@ -24,10 +24,17 @@ import statistics
 import struct
 import sys
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Sequence
 from itertools import pairwise
+from typing import Any
 
-from fitroute import height, measure, read_elevations, read_route, retime
+from fitroute import Point, height, measure, read_elevations, read_route, retime
 from fitshift import RECORD, crc16, walk
+
+# One data message's fields by number, each (value, offset, size, endian).
+type Fields = dict[int, tuple[int, int, int, str]]
+# A data message: its global_num and fields.
+type Message = tuple[int, Fields]
 
 SESSION = 18
 LAP = 19
@@ -63,18 +70,26 @@ SLOPE_WINDOW = 20.0
 STEEPEST = 30.0
 
 
-def read_messages(data):
+def read_messages(data: bytes) -> tuple[list[Message], int]:
     """Return (messages, data_end).
 
     One entry per data message: its global number and, for each field we may
     read or write, (value, offset, size, endian).
     """
-    messages = []
+    messages: list[Message] = []
 
-    def start(global_num):
+    def start(global_num: int) -> None:
         messages.append((global_num, {}))
 
-    def visit(global_num, number, base_type, endian, pos, size, developer):
+    def visit(
+        global_num: int,
+        number: int,
+        base_type: int,
+        endian: str,
+        pos: int,
+        size: int,
+        developer: bool,
+    ) -> None:
         if developer or size not in (1, 2, 4):
             return
         code = {1: 'B', 2: 'H', 4: 'I'}[size]
@@ -85,14 +100,16 @@ def read_messages(data):
     return messages, end
 
 
-def smooth(values, window):
+def smooth(values: Sequence[float], window: int) -> list[float]:
     return [
         statistics.fmean(values[max(0, i - window) : i + window + 1])
         for i in range(len(values))
     ]
 
 
-def model(times, heart, speeds, keep):
+def model(
+    times: Sequence[int], heart: Sequence[float], speeds: Sequence[float], keep: int
+) -> tuple[float, float]:
     """Fit speed = intercept + slope * heart rate on records [WARMUP, keep)."""
     first = next((i for i, t in enumerate(times) if t - times[0] >= WARMUP), 0)
     if keep - first < 2:
@@ -105,7 +122,7 @@ def model(times, heart, speeds, keep):
     return slope, intercept
 
 
-def pace(data, keep, length):
+def pace(data: bytes, keep: float, length: float) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with distance after keep metres paced by heart rate.
 
     The heart-rate model sets the shape; the remaining distance to length
@@ -164,7 +181,7 @@ def pace(data, keep, length):
     return out, stats
 
 
-def unjam(data, limit, length):
+def unjam(data: bytes, limit: float, length: float) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with the distance rebuilt from the recorded pace.
 
     For a watch with only the jammed GPS to measure with: it integrates the
@@ -228,7 +245,7 @@ def unjam(data, limit, length):
     return out, stats
 
 
-def rescale(data, length):
+def rescale(data: bytes, length: float) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with every distance and speed scaled onto length.
 
     For a watch that measured the whole run long: the shape of the pace is
@@ -277,7 +294,7 @@ def rescale(data, length):
     return out, stats
 
 
-def cost(slope):
+def cost(slope: float) -> float:
     """Return how much harder a metre at this slope is than a flat one.
 
     A quadratic fit to Strava's grade-adjusted pace, which was measured from
@@ -290,7 +307,9 @@ def cost(slope):
     return 1 + 0.0302 * percent + 0.0017 * percent * percent
 
 
-def slope_at(cumulative, elevations, along):
+def slope_at(
+    cumulative: Sequence[float], elevations: Sequence[float], along: float
+) -> float:
     low = max(0.0, along - SLOPE_WINDOW)
     high = min(cumulative[-1], along + SLOPE_WINDOW)
     if high <= low:
@@ -299,15 +318,23 @@ def slope_at(cumulative, elevations, along):
     return rise / (high - low)
 
 
-def climb(times, efforts, cumulative, elevations, low, high):
+def climb(
+    times: Sequence[int],
+    efforts: Sequence[float],
+    cumulative: Sequence[float],
+    elevations: Sequence[float],
+    low: float,
+    high: float,
+) -> tuple[list[float], list[float]]:
     """Return (distances, speeds) over one span with the pace set by the slope.
 
     Each second the runner covers effort / cost(slope) metres, times one
     factor found by bisection so the span ends exactly on high.
     """
 
-    def run(factor):
-        distances, speeds = [low], []
+    def run(factor: float) -> tuple[list[float], list[float]]:
+        distances: list[float] = [low]
+        speeds: list[float] = []
         for index, effort in enumerate(efforts):
             speed = (
                 factor * effort / cost(slope_at(cumulative, elevations, distances[-1]))
@@ -332,7 +359,12 @@ def climb(times, efforts, cumulative, elevations, low, high):
     return distances, speeds
 
 
-def grade(data, points, elevations, splits=()):
+def grade(
+    data: bytes,
+    points: Sequence[Point],
+    elevations: Sequence[float],
+    splits: Sequence[float] = (),
+) -> tuple[bytes, dict[str, Any]]:
     """Return (bytes, stats) with the pace on each span following its slope.
 
     For a hilly run measured by a watch with no footpod: its accelerometer
@@ -418,7 +450,16 @@ def grade(data, points, elevations, splits=()):
     return out, stats
 
 
-def rewrite(data, messages, end, times, distances, speeds, records, split):
+def rewrite(
+    data: bytes,
+    messages: Sequence[Message],
+    end: int,
+    times: Sequence[int],
+    distances: Sequence[float],
+    speeds: Sequence[float],
+    records: Sequence[Fields],
+    split: int,
+) -> bytes:
     """Return a copy of data with distance and speed after split replaced.
 
     The lap and session totals that are read from them move with them.
@@ -456,7 +497,9 @@ def rewrite(data, messages, end, times, distances, speeds, records, split):
     return bytes(out)
 
 
-def retotal(data, end, laps, spans):
+def retotal(
+    data: bytes, end: int, laps: Sequence[Fields], spans: Sequence[tuple[float, float]]
+) -> bytes:
     """Return a copy of data with every lap total its span of route exactly.
 
     rewrite() reads a lap total back off the records inside the lap's own
@@ -477,7 +520,7 @@ def retotal(data, end, laps, spans):
     return bytes(out)
 
 
-def put(out, fields, number, value):
+def put(out: bytearray, fields: Fields, number: int, value: int) -> None:
     """Overwrite a field in place, clamped to its size, if the message has it."""
     if number not in fields:
         return
@@ -487,12 +530,12 @@ def put(out, fields, number, value):
     struct.pack_into(endian + code, out, pos, max(0, min(value, limit)))
 
 
-def minutes(seconds_per_km):
+def minutes(seconds_per_km: float) -> str:
     mins, secs = divmod(round(seconds_per_km), 60)
     return f'{mins}:{secs:02d}/km'
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', help='FIT file with the heart rate to model from')
     parser.add_argument('route', help='GPX file whose length the run covered')

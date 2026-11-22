@@ -62,26 +62,42 @@ check a change.
 `tracks/` holds real sample activities (`Lunch_Ride.fit`, `Morning_Run.fit`, a
 `09.10.2026.gpx` route) alongside already-produced outputs.
 
-`ruff` is the formatter and the linter, configured in `pyproject.toml`. Run
-both before calling a change done:
+`ruff` is the formatter and the linter and `ty` the type checker, all
+configured in `pyproject.toml`. Run the three before calling a change done:
 
 ```sh
 uv run ruff format .
 uv run ruff check .
+uv run --extra rebuild ty check
 ```
 
-`.githooks/pre-commit` runs both, in `--check` mode, and then the suite; a
-clone enables it with `git config core.hooksPath .githooks`. It never edits
-the code, so a commit it refuses is fixed by running the two commands above.
+`ty` needs `--extra rebuild` to resolve `fit_tool` in `fitgraft.py`.
+`.githooks/pre-commit` runs all three, `ruff format` in `--check` mode, and
+then the suite; a clone enables it with `git config core.hooksPath .githooks`.
+It never edits the code, so a commit it refuses is fixed by running the
+commands above.
+
+Every function is annotated, in the six tools and both test modules, nested
+`visit`s included; `ANN` enforces it and `ty` checks it all.
+A read-only parameter is a `Sequence`, so a `list[int]` of timestamps passes
+where floats are expected; a returned one is a `list`. The shared aliases are
+`type` statements next to the code they describe: `Visit`, `OnMessage`,
+`FieldDefinition` and `Definition` in `fitshift.py`, `Point`, `Anchor` and `Record` in `fitroute.py`, `Fields` and
+`Message` in `fitpace.py`, and `Field`, `Message` and `Record` in
+`test_fitmend.py` for what `encode()` takes. A record or a stats dict stays a
+plain `dict[str, Any]` rather than a `TypedDict`.
 
 Single quotes, 88 columns. The rule set is broad and listed in
 `pyproject.toml` with a comment on each family; both it and the `ignore` list
 are the interesting part, so read them before adding a rule or a `noqa`. The
-four standing exemptions are the lazy `fit_tool` import inside `rebuild()`
+five standing exemptions are the lazy `fit_tool` import inside `rebuild()`
 (`PLC0415`), `ElementTree` on a GPX file the user named (`S314`), the
-one-line `open(...).read()` in each `main()` (`SIM115`), and `ISC001`, which
-the formatter owns. Whole families left out rather than fought: `ANN` and `D`
-(no annotations, and function names in place of per-function docstrings),
+one-line `open(...).read()` in each `main()` (`SIM115`), `FURB187`, whose
+in-place `reverse()` would reverse the caller's route too, and `ISC001`, which
+the formatter owns. The one `ty: ignore` is `fit_tool`'s
+`definition_message`, typed non-optional but cleared on purpose in
+`set_position`. Whole families left out rather than fought: `D` (function
+names in place of per-function docstrings),
 `PT` (the suite is unittest), `PTH`, `PLR` (magic values are FIT field
 numbers), `T20` (print is how a CLI reports), `TRY`/`EM`, `ICN`
 (`ElementTree`, not `ET`). The `CRC_TABLE` grid in `fitshift.py` is fenced
