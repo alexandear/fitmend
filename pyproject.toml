@@ -76,5 +76,8 @@ ignore = [
     "SIM115",  # one-line open().read() in a main() that exits; `with` only adds indentation
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"analysis/**" = ["INP001"]  # standalone scripts run by path, not a package
+
 [tool.ruff.lint.isort]
 known-first-party = ["fitgraft", "fitpace", "fitroute", "fitshift"]
