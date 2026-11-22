@@ -11,7 +11,7 @@ import datetime
 import re
 import struct
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 # FIT date_time is uint32 seconds since this instant, UTC.
@@ -232,7 +232,11 @@ def survey(data: bytes) -> tuple[int, int, tuple[int, int], int]:
 def shift(
     data: bytes, seconds: int, window: tuple[int, int], zone: int | None = None
 ) -> tuple[bytes, int]:
-    """Return a copy of data with every date_time inside window moved."""
+    """Return a copy of data with every date_time inside window moved.
+
+    zone, when given, is the UTC offset to record in the file, which has to
+    have an activity.local_timestamp to record it in.
+    """
     out = bytearray(data)
     low, high = window
     count = 0
@@ -260,8 +264,8 @@ def shift(
         count += 1
 
     end = walk(data, visit)
-    if zone is not None:
-        set_zone(out, zone)
+    if zone is not None and not set_zone(out, zone):
+        raise ValueError('no activity local_timestamp to record the zone in')
     # The 14-byte header's own CRC covers bytes 0..11, which do not change.
     struct.pack_into('<H', out, end, crc16(bytes(out[:end])))
     return bytes(out), count
@@ -300,6 +304,18 @@ def set_zone(out: bytearray, seconds: int) -> bool:
     return True
 
 
+def seconds_to(target: datetime.datetime, start: int, offset: int) -> int:
+    """Return the shift that moves start to target.
+
+    A target without an offset of its own is a time in the file's zone, offset
+    seconds ahead of UTC; one with an offset already names its instant.
+    """
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=datetime.UTC)
+        target -= datetime.timedelta(seconds=offset)
+    return int((target - EPOCH).total_seconds()) - start
+
+
 def seconds_zone(seconds: int) -> str:
     sign = '-' if seconds < 0 else '+'
     hours, minutes = divmod(abs(seconds) // 60, 60)
@@ -312,7 +328,7 @@ def render(stamp: int, offset: int) -> str:
     return f'{local:%Y-%m-%d %H:%M:%S} local / {utc:%Y-%m-%d %H:%M:%S} UTC'
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path, help='FIT file to read')
     parser.add_argument('-o', '--out', type=Path, help='output FIT file')
@@ -345,7 +361,7 @@ def main() -> int:
     parser.add_argument(
         '-n', '--dry-run', action='store_true', help='report the shift without writing'
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.out and not args.dry_run:
         parser.error('-o/--out is required unless --dry-run')
@@ -363,8 +379,7 @@ def main() -> int:
 
     seconds = args.by
     if seconds is None:
-        target = args.to.replace(tzinfo=datetime.UTC)
-        seconds = int((target - EPOCH).total_seconds()) - offset - start
+        seconds = seconds_to(args.to, start, offset)
 
     print(f'start  {render(start, offset)}')
     print(f'end    {render(last, offset)}')
@@ -378,7 +393,11 @@ def main() -> int:
     # relative order. The one-day margin covers a local_timestamp that falls
     # on the far side of the UTC day from the values it sits between.
     low, high = window
-    patched, count = shift(data, seconds, (low - 86400, high + 86400), args.zone)
+    try:
+        patched, count = shift(data, seconds, (low - 86400, high + 86400), args.zone)
+    except ValueError as err:
+        print(f'{args.input}: cannot shift: {err}', file=sys.stderr)
+        return 1
     args.out.write_bytes(patched)
     print(f'moved  {count} timestamps')
     if args.zone is not None:

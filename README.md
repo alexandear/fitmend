@@ -478,7 +478,8 @@ writing.
 ridden on. That offset comes from the file itself: `activity.local_timestamp`
 is the same instant as `activity.timestamp` rendered in the wearer's timezone,
 so the difference between them is the offset. `--utc` reads `--to` as UTC
-instead.
+instead, and a `--to` that carries its own offset, `2026-09-30T07:16+03:00`,
+names its instant whatever the file says.
 
 ### Trust the file's offset only as far as you trust the watch
 
@@ -486,7 +487,8 @@ instead.
 
 `--zone` reads `--to` as a time in that UTC offset and writes the offset back
 into `activity.local_timestamp`, so the file agrees with where the ride
-happened.
+happened. A file with no `local_timestamp` to write it into is refused rather
+than shifted without the zone it was asked for.
 
 Use it whenever the recorded offset and the GPS disagree. A head unit that
 kept a stale timezone writes a `local_timestamp` for somewhere the rider has

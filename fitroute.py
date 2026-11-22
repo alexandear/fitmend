@@ -232,7 +232,9 @@ def keep_real(
     """
     kept = 0
     for record in records:
-        if record['trusted'] or record['distance'] is None or record['fix'] is None:
+        # No distance is needed: the whole route is searched, and a real fix
+        # with no odometer reading is kept rather than marked invalid.
+        if record['trusted'] or record['fix'] is None:
             continue
         off, _ = project(points, cumulative, record['fix'], 0, cumulative[-1])
         if off > SPOOFED:
@@ -422,10 +424,10 @@ def read_records(data: bytes) -> tuple[list[Record], int]:
         if number == TIMESTAMP and size == 4 and base_type & 0x1F == UINT32:
             current['stamp'] = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
         elif number == DISTANCE and size == 4 and base_type & 0x1F == UINT32:
-            # record.distance is scaled by 100, so the stored unit is a cm.
-            current['distance'] = (
-                struct.unpack(endian + 'I', data[pos : pos + 4])[0] / 100.0
-            )
+            raw = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
+            if raw != 0xFFFFFFFF:
+                # record.distance is scaled by 100, so the stored unit is a cm.
+                current['distance'] = raw / 100.0
         elif number == ENHANCED_ALTITUDE and size == 4 and base_type & 0x1F == UINT32:
             raw = struct.unpack(endian + 'I', data[pos : pos + 4])[0]
             if raw != 0xFFFFFFFF:
@@ -465,11 +467,15 @@ def summarize(data: bytes) -> bytes:
     the spoofer said. Viewers place the activity, and pick its timezone, from
     them. Fields the summary was written without stay absent.
     """
-    fixes = []
+    # [stamp, lat, lon] per record, opened when the record starts, since a
+    # definition need not list the timestamp before the position.
+    fixes: list[list[int | None]] = []
     summaries = []
 
     def start(global_num: int) -> None:
-        if global_num in SUMMARY_FIELDS:
+        if global_num == RECORD:
+            fixes.append([None, None, None])
+        elif global_num in SUMMARY_FIELDS:
             summaries.append({'kind': global_num, 'start': None, 'fields': {}})
 
     def visit(
@@ -485,10 +491,8 @@ def summarize(data: bytes) -> bytes:
             return
         if global_num == RECORD:
             if number == TIMESTAMP:
-                fixes.append(
-                    [struct.unpack_from(endian + 'I', data, pos)[0], None, None]
-                )
-            elif number in (POSITION_LAT, POSITION_LONG) and fixes:
+                fixes[-1][0] = struct.unpack_from(endian + 'I', data, pos)[0]
+            elif number in (POSITION_LAT, POSITION_LONG):
                 value = struct.unpack_from(endian + 'i', data, pos)[0]
                 if abs(value) != INVALID:
                     fixes[-1][1 + number] = value
@@ -502,10 +506,12 @@ def summarize(data: bytes) -> bytes:
             current['fields'][number] = (pos, endian)
 
     end = walk(data, visit, start)
+    # A record under a compressed-timestamp header has no stamp of its own to
+    # say which lap it falls in.
     placed = [
         (stamp, lat, lon)
         for stamp, lat, lon in fixes
-        if lat is not None and lon is not None
+        if stamp is not None and lat is not None and lon is not None
     ]
     laps = sorted(
         s['start'] for s in summaries if s['kind'] == LAP and s['start'] is not None
@@ -562,9 +568,12 @@ def match(
     if limit:
         # Only the axis the placement runs on changes; the distance recorded
         # in the file is left alone, which is fitpace.py's to rewrite.
-        paced = [
-            r for r in records if r['distance'] is not None and r['stamp'] is not None
-        ]
+        # A record under a compressed-timestamp header has no time of its own
+        # to pace, so its distance cannot be rebuilt and it is not placed.
+        for record in records:
+            if record['stamp'] is None:
+                record['distance'] = None
+        paced = [r for r in records if r['distance'] is not None]
         rebuilt, jumps, dropped = retime(
             [r['stamp'] for r in paced], [r['distance'] for r in paced], limit
         )
@@ -642,14 +651,21 @@ def graft(
 
     out = bytearray(data)
     for record in records:
-        if record['distance'] is None or record['lat'] is None or record['lon'] is None:
+        if record['lat'] is None or record['lon'] is None:
             stats['skipped'] += 1
             continue
         if record['trusted']:
             stats['kept'] += 1
             continue
-        lat, lon = locate(points, cumulative, interpolate(anchors, record['distance']))
         endian = record['endian']
+        if record['distance'] is None:
+            # With no odometer reading to place it by, its untrusted fix is
+            # marked invalid, so the summaries cannot take a spoofed position.
+            struct.pack_into(endian + 'i', out, record['lat'], INVALID)
+            struct.pack_into(endian + 'i', out, record['lon'], INVALID)
+            stats['skipped'] += 1
+            continue
+        lat, lon = locate(points, cumulative, interpolate(anchors, record['distance']))
         struct.pack_into(endian + 'i', out, record['lat'], round(lat * SEMICIRCLES))
         struct.pack_into(endian + 'i', out, record['lon'], round(lon * SEMICIRCLES))
         stats['placed'] += 1

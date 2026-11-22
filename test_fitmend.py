@@ -5,11 +5,13 @@ depends on a real activity or on fit-tool.
 """
 
 import argparse
+import contextlib
 import datetime
+import io
 import struct
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -178,6 +180,14 @@ def north(
     """count points going north from (lat, lon), metres apart."""
     step = metres / (fitroute.EARTH_RADIUS * 3.141592653589793 / 180.0)
     return [(lat + step * index, lon) for index in range(count)]
+
+
+def run(main: Callable[[Sequence[str]], int], *argv: str | Path) -> tuple[int, str]:
+    """Run a tool's main() on argv; return its exit code and what it printed."""
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+        code = main([str(arg) for arg in argv])
+    return code, printed.getvalue()
 
 
 class Crc(unittest.TestCase):
@@ -441,6 +451,24 @@ class Shift(unittest.TestCase):
         low, high = self.window
         out, _ = fitshift.shift(self.data, 0, (low - 86400, high + 86400), -7200)
         self.assertEqual(fitshift.survey(out)[3], -7200)
+
+    def test_a_zone_with_nowhere_to_be_recorded_is_refused(self) -> None:
+        data = encode([(fitshift.RECORD, [(253, 'uint32', START)])])
+        with self.assertRaisesRegex(ValueError, 'local_timestamp'):
+            fitshift.shift(data, 0, (START, START), ZONE)
+
+    def test_a_target_without_an_offset_is_in_the_file_s_zone(self) -> None:
+        target = fitshift.EPOCH + datetime.timedelta(seconds=START + 3600 + ZONE)
+        naive = target.replace(tzinfo=None)
+        self.assertEqual(fitshift.seconds_to(naive, START, ZONE), 3600)
+
+    def test_a_target_with_an_offset_names_its_own_instant(self) -> None:
+        # 07:16+03:00 is 04:16 UTC whatever zone the file was recorded in.
+        zone = datetime.timezone(datetime.timedelta(hours=3))
+        target = datetime.datetime(2026, 9, 30, 7, 16, tzinfo=zone)
+        utc = datetime.datetime(2026, 9, 30, 4, 16, tzinfo=datetime.UTC)
+        start = int((utc - fitshift.EPOCH).total_seconds()) - 60
+        self.assertEqual(fitshift.seconds_to(target, start, 3600), 60)
 
 
 class SetZone(unittest.TestCase):
@@ -804,6 +832,124 @@ class Graft(unittest.TestCase):
         _, stats = fitroute.graft(activity(records), self.points)
         self.assertEqual((stats['placed'], stats['skipped']), (0, 5))
 
+    def test_an_invalid_distance_is_no_distance(self) -> None:
+        records = [
+            (START + index, [(5, 'uint32', index * 100 * 100)]) for index in range(5)
+        ]
+        records[2] = (START + 2, [(5, 'uint32', 0xFFFFFFFF)])
+        read, _ = fitroute.read_records(activity(records))
+        self.assertEqual(
+            [r['distance'] for r in read], [0.0, 100.0, None, 300.0, 400.0]
+        )
+
+    def first_without_distance(self, fix: fitroute.Point) -> bytes:
+        """Five records on the sentinel, the first at fix and before the odometer."""
+        position = [
+            (0, 'sint32', semicircles(fix[0])),
+            (1, 'sint32', semicircles(fix[1])),
+        ]
+        records: list[Record] = [(START, position)]
+        records += [
+            (
+                START + index * 60,
+                [
+                    (5, 'uint32', index * 100 * 100),
+                    (0, 'sint32', SENTINEL),
+                    (1, 'sint32', SENTINEL),
+                ],
+            )
+            for index in range(1, 5)
+        ]
+        return activity(records)
+
+    def test_a_fix_with_no_distance_cannot_reach_the_summary(self) -> None:
+        # Written before the odometer started, and spoofed to another country.
+        out, stats = fitroute.graft(
+            self.first_without_distance((10.0, 10.0)), self.points
+        )
+        self.assertEqual(stats['skipped'], 1)
+        read, _ = fitroute.read_records(out)
+        self.assertIsNone(read[0]['fix'])
+        session = sint32_fields(out, SESSION)
+        self.assertEqual(session[3], semicircles(self.points[1][0]))
+        self.assertEqual(session[31], semicircles(self.points[1][0]))
+
+    def test_broken_only_keeps_a_real_fix_with_no_distance(self) -> None:
+        near = (self.points[0][0], self.points[0][1] + 0.005)  # about 360 m east
+        data = self.first_without_distance(near)
+        out, stats = fitroute.graft(data, self.points, broken_only=True)
+        self.assertEqual(stats['kept'], 1)
+        read, _ = fitroute.read_records(out)
+        self.assertIsNotNone(read[0]['fix'])
+
+    def test_the_summary_reads_a_position_listed_before_the_timestamp(self) -> None:
+        records: list[Message] = [
+            (
+                fitshift.RECORD,
+                [
+                    (0, 'sint32', semicircles(lat)),
+                    (1, 'sint32', semicircles(lon)),
+                    (253, 'uint32', START + index),
+                ],
+            )
+            for index, (lat, lon) in enumerate(self.points)
+        ]
+        session: Message = (
+            SESSION,
+            [(2, 'uint32', START), (3, 'sint32', SENTINEL), (38, 'sint32', SENTINEL)],
+        )
+        out = fitroute.summarize(encode([*records, session]))
+        found = sint32_fields(out, SESSION)
+        self.assertEqual(found[3], semicircles(self.points[0][0]))
+        self.assertEqual(found[38], semicircles(self.points[-1][0]))
+
+    def test_a_record_with_no_timestamp_is_left_out_of_the_summary(self) -> None:
+        # A compressed-timestamp record carries no field 253, and its position
+        # must not land on the record before it.
+        sint32, uint32 = BASE['sint32'][0], BASE['uint32'][0]
+        body = bytearray([0x40, 0, 0]) + struct.pack('<HB', fitshift.RECORD, 3)
+        body += bytes([253, 4, uint32, 0, 4, sint32, 1, 4, sint32])
+        body += bytes([0x41, 0, 0]) + struct.pack('<HB', fitshift.RECORD, 2)
+        body += bytes([0, 4, sint32, 1, 4, sint32])
+        body += bytes([0x42, 0, 0]) + struct.pack('<HB', SESSION, 3)
+        body += bytes([2, 4, uint32, 3, 4, sint32, 38, 4, sint32])
+        first, second = self.points[0], self.points[1]
+        body += bytes([0x00]) + struct.pack(
+            '<Iii', START, semicircles(first[0]), semicircles(first[1])
+        )
+        # Compressed header: bit 7, local type 1, a time offset of 1.
+        body += bytes([0x80 | 1 << 5 | 1]) + struct.pack(
+            '<ii', semicircles(second[0]), semicircles(second[1])
+        )
+        body += bytes([0x02]) + struct.pack('<Iii', START, SENTINEL, SENTINEL)
+        found = sint32_fields(fitroute.summarize(raw(body)), SESSION)
+        self.assertEqual(found[3], semicircles(first[0]))
+        self.assertEqual(found[38], semicircles(first[0]))
+
+    def test_max_speed_does_not_place_a_record_it_cannot_pace(self) -> None:
+        # The record under a compressed-timestamp header has no time to pace
+        # its jammed 5 km by, so it is not placed rather than placed 5 km on.
+        uint32, sint32 = BASE['uint32'][0], BASE['sint32'][0]
+        body = bytearray([0x40, 0, 0]) + struct.pack('<HB', fitshift.RECORD, 4)
+        body += bytes([253, 4, uint32, 5, 4, uint32, 0, 4, sint32, 1, 4, sint32])
+        body += bytes([0x41, 0, 0]) + struct.pack('<HB', fitshift.RECORD, 3)
+        body += bytes([5, 4, uint32, 0, 4, sint32, 1, 4, sint32])
+        for index in range(3):
+            body += bytes([0x00]) + struct.pack(
+                '<IIii', START + index, index * 300, SENTINEL, SENTINEL
+            )
+        body += bytes([0x80 | 1 << 5 | 3]) + struct.pack(
+            '<Iii', 500000, SENTINEL, SENTINEL
+        )
+        body += bytes([0x00]) + struct.pack(
+            '<IIii', START + 4, 1200, SENTINEL, SENTINEL
+        )
+        out, stats = fitroute.graft(raw(body), self.points, limit=5.0)
+        self.assertAlmostEqual(stats['ride_length'], 12.0)
+        self.assertEqual((stats['placed'], stats['skipped']), (4, 1))
+        read, _ = fitroute.read_records(out)
+        self.assertIsNone(read[3]['fix'])
+
     def test_the_file_crc_is_recomputed(self) -> None:
         out, _ = fitroute.graft(self.ride([None] * 5), self.points)
         end = fitshift.walk(out, lambda *args: None)
@@ -965,6 +1111,20 @@ class Unjam(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'only'):
             fitpace.unjam(self.ride([0, 3, 6, 9, 109]), 5.0, 5.0)
 
+    def test_a_run_jammed_from_its_first_second_keeps_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder) / 'run.fit'
+            base.write_bytes(self.ride([0, 100, 103, 106, 109, 112]))
+            gpx = route(Path(folder) / 'route.gpx', north(2, 30))
+            code, printed = run(fitpace.main, base, gpx, '--max-speed', '18', '-n')
+        self.assertEqual(code, 0, printed)
+        self.assertIn('kept      0.000 km in 0:00\n', printed)
+
+    def test_a_run_with_no_pace_left_to_rebuild_from_is_refused(self) -> None:
+        # Every plausible second stood still, so the jump has no pace to take.
+        with self.assertRaisesRegex(ValueError, 'no plausible pace'):
+            fitpace.unjam(self.ride([0, 0, 0, 0, 100, 100, 100]), 5.0, 27.0)
+
     def test_the_file_crc_is_recomputed(self) -> None:
         out, _ = fitpace.unjam(self.ride([0, 3, 6, 9, 109, 112]), 5.0, 27.0)
         end = fitshift.walk(out, lambda *args: None)
@@ -1018,6 +1178,19 @@ class Rescale(unittest.TestCase):
             if number == fitshift.RECORD and 6 in fields
         ]
         self.assertEqual(speeds, [2000] * 5)
+
+    def test_an_invalid_speed_stays_invalid(self) -> None:
+        records = [
+            (START + index, [(5, 'uint32', index * 300), (6, 'uint16', 3000)])
+            for index in range(5)
+        ]
+        records[2] = (START + 2, [(5, 'uint32', 600), (6, 'uint16', 0xFFFF)])
+        out, _ = fitpace.rescale(activity(records), 24.0)
+        messages, _ = fitpace.read_messages(out)
+        self.assertEqual(
+            [f.get(6, (None,))[0] for n, f in messages if n == fitshift.RECORD],
+            [6000, 6000, None, 6000, 6000],
+        )
 
     def test_the_totals_follow_the_records(self) -> None:
         out, _ = fitpace.rescale(self.ride([0, 3, 6, 9, 12]), 6.0)
@@ -1178,6 +1351,13 @@ class Grade(unittest.TestCase):
                 self.session([(300, 900)], speed=0.0), self.points, self.elevations
             )
 
+    def test_a_lap_of_one_record_is_refused(self) -> None:
+        # Lap pressed, then stop a second later: no effort carries that lap
+        # anywhere, and the search for its pace must end rather than spin.
+        data = self.session([(299, 600), (1, 300)])
+        with self.assertRaisesRegex(ValueError, 'too little speed'):
+            fitpace.grade(data, self.points, self.elevations, [600.0])
+
     def test_the_parse_still_ends_on_the_file_crc(self) -> None:
         out, _ = fitpace.grade(self.session([(300, 900)]), self.points, self.elevations)
         self.assertEqual(fitshift.walk(out, lambda *_: None), len(out) - 2)
@@ -1203,7 +1383,8 @@ class Cost(unittest.TestCase):
 class Pace(unittest.TestCase):
     """The heart-rate model, on a run where speed follows heart rate exactly."""
 
-    def ride(self, count: int = 300) -> bytes:
+    def ride(self, count: int = 300, dropout: range = range(0)) -> bytes:
+        """dropout is the records whose heart rate the strap lost."""
         records = []
         distance = 0.0
         for index in range(count):
@@ -1216,7 +1397,7 @@ class Pace(unittest.TestCase):
                     [
                         (5, 'uint32', round(distance * 100)),
                         (73, 'uint32', round(speed * 1000)),
-                        (3, 'uint8', heart),
+                        (3, 'uint8', 0xFF if index in dropout else heart),
                     ],
                 )
             )
@@ -1276,6 +1457,39 @@ class Pace(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'never gets past'):
             fitpace.pace(self.ride(), 100000.0, 200000.0)
 
+    def test_a_model_that_predicts_no_distance_is_refused(self) -> None:
+        # Every record past --keep repeats the last timestamp, so whatever
+        # the heart rate predicts, it is held for no time and covers nothing.
+        records = []
+        distance = 0.0
+        for index in range(305):
+            heart = 120 + index // 10
+            speed = 0.02 * heart
+            distance += speed
+            records.append(
+                (
+                    START + min(index, 299),
+                    [
+                        (5, 'uint32', round(distance * 100)),
+                        (73, 'uint32', round(speed * 1000)),
+                        (3, 'uint8', heart),
+                    ],
+                )
+            )
+        keep = records[299][1][0][2] / 100.0
+        with self.assertRaisesRegex(ValueError, 'predicts no movement'):
+            fitpace.pace(activity(records), keep, keep + 1000.0)
+
+    def test_a_heart_rate_dropout_is_no_heart_rate(self) -> None:
+        _, clean = fitpace.pace(self.ride(), 500.0, 1200.0)
+        out, lost = fitpace.pace(self.ride(dropout=range(150, 160)), 500.0, 1200.0)
+        self.assertAlmostEqual(lost['slope'], clean['slope'], places=3)
+        # A record the strap dropped is paced with the rest after --keep.
+        out, _ = fitpace.pace(self.ride(dropout=range(290, 295)), 500.0, 1200.0)
+        records, _ = fitroute.read_records(out)
+        along = [r['distance'] for r in records]
+        self.assertEqual(along, sorted(along))
+
 
 class Stops(unittest.TestCase):
     """Which pauses invented distance, read off the times and the odometer."""
@@ -1312,6 +1526,21 @@ class Stops(unittest.TestCase):
         times = [0, 1, 90, 91, 92, 200, 201, 202]
         distances = [0.0, 3.0, 50.0, 110.0, 113.0, 160.0, 220.0, 223.0]
         self.assertEqual(fitstop.stops(times, distances), [(1, 3), (4, 6)])
+
+    def test_a_pause_inside_the_jump_before_it_is_one_stop(self) -> None:
+        # The jump after the first pause runs on across the second, and its
+        # metres are dropped once.
+        times = [0, 1, 2, 3, 13, 14, 24, 25, 26]
+        distances = [0.0, 3.0, 6.0, 9.0, 509.0, 609.0, 1009.0, 1109.0, 1112.0]
+        self.assertEqual(fitstop.stops(times, distances), [(3, 7)])
+        data = activity(
+            [
+                (START + t, [(5, 'uint32', round(d * 100))])
+                for t, d in zip(times, distances, strict=True)
+            ]
+        )
+        _, stats = fitstop.destop(data)
+        self.assertAlmostEqual(stats['dropped'], stats['recorded'] - stats['kept'])
 
 
 class Destop(unittest.TestCase):
@@ -1708,6 +1937,20 @@ class Hills(unittest.TestCase):
         spans = fithills.spans(along, foot, apex, back, 3)
         with self.assertRaisesRegex(ValueError, 'no records'):
             fithills.relap(encode([(FILE_ID, [(0, 'uint8', 4)])]), spans)
+
+    # --- the report ---
+
+    def test_the_route_reports_its_length_with_and_without_repeats(self) -> None:
+        base = self.path('hill.fit')
+        base.write_bytes(self.session(self.legs(3)))
+        gpx = route(self.path(), self.points, self.elevations)
+        code, printed = run(
+            fithills.main, base, gpx, '--from', '0.4', '--to', '0.8',
+            '--repeats', '3', '-n',
+        )  # fmt: skip
+        self.assertEqual(code, 0, printed)
+        once = self.cumulative[-1] / 1000
+        self.assertIn(f'3.200 km with 3 repeats ({once:.3f} km once)', printed)
 
 
 class Put(unittest.TestCase):

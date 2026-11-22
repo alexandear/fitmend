@@ -98,6 +98,10 @@ def stops(
     windows = []
     paused = (i for i, (a, b) in enumerate(pairwise(times), start=1) if b - a > gap)
     for after in paused:
+        # A pause inside the jump that followed the one before is already
+        # in that window, and its metres must not be dropped twice.
+        if windows and after <= windows[-1][1]:
+            continue
         last = after
         while last + 1 < len(times):
             step = times[last + 1] - times[last]

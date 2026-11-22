@@ -70,12 +70,17 @@ SLOPE_WINDOW = 20.0
 # Past this the quadratic below stops describing anyone running.
 STEEPEST = 30.0
 
+# The base types, masked to their number, whose all-ones value means invalid:
+# enum, uint8, uint16 and uint32.
+UNSIGNED = (0x00, 0x02, 0x04, 0x06)
+
 
 def read_messages(data: bytes) -> tuple[list[Message], int]:
     """Return (messages, data_end).
 
     One entry per data message: its global number and, for each field we may
-    read or write, (value, offset, size, endian).
+    read or write, (value, offset, size, endian). A field holding its invalid
+    value, a heart-rate strap's dropout say, is left out as if never written.
     """
     messages: list[Message] = []
 
@@ -95,6 +100,8 @@ def read_messages(data: bytes) -> tuple[list[Message], int]:
             return
         code = {1: 'B', 2: 'H', 4: 'I'}[size]
         value = struct.unpack(endian + code, data[pos : pos + size])[0]
+        if base_type & 0x1F in UNSIGNED and value == 2 ** (8 * size) - 1:
+            return
         messages[-1][1][number] = (value, pos, size, endian)
 
     end = walk(data, visit, start)
@@ -133,9 +140,11 @@ def pace(data: bytes, keep: float, length: float) -> tuple[bytes, dict[str, Any]
     records = [
         fields
         for number, fields in messages
-        if number == RECORD and {TIMESTAMP, HEART_RATE, DISTANCE} <= fields.keys()
+        if number == RECORD and {TIMESTAMP, DISTANCE} <= fields.keys()
     ]
-    if not records:
+    beats = [r[HEART_RATE][0] if HEART_RATE in r else None for r in records]
+    known = [rate for rate in beats if rate is not None]
+    if not known:
         raise ValueError('no records with timestamp, heart rate and distance')
 
     times = [r[TIMESTAMP][0] for r in records]
@@ -146,7 +155,13 @@ def pace(data: bytes, keep: float, length: float) -> tuple[bytes, dict[str, Any]
         else r.get(SPEED, (0,))[0] / 1000.0
         for r in records
     ]
-    heart = smooth([r[HEART_RATE][0] for r in records], SMOOTHING)
+    # A dropout holds the last rate the strap read, so the record it falls
+    # on is still paced and its distance moves with its neighbours'.
+    held = known[0]
+    for index, rate in enumerate(beats):
+        held = held if rate is None else rate
+        beats[index] = held
+    heart = smooth([float(rate or 0) for rate in beats], SMOOTHING)
 
     split = next((i for i, d in enumerate(distances) if d >= keep), None)
     if split is None or split == len(records) - 1:
@@ -159,6 +174,8 @@ def pace(data: bytes, keep: float, length: float) -> tuple[bytes, dict[str, Any]
     predicted = [max(0.0, intercept + slope * rate) for rate in heart[split + 1 :]]
     steps = [second - first for first, second in pairwise(times[split:])]
     modelled = sum(v * dt for v, dt in zip(predicted, steps, strict=True))
+    if modelled <= 0:
+        raise ValueError('heart rate predicts no movement after --keep')
     ratio = remaining / modelled
 
     for i, (v, dt) in enumerate(zip(predicted, steps, strict=True), start=split + 1):
@@ -217,6 +234,8 @@ def unjam(data: bytes, limit: float, length: float) -> tuple[bytes, dict[str, An
     remaining = length - rebuilt[split]
     if remaining <= 0:
         raise ValueError(f'the route is only {length:.0f} m long')
+    if rebuilt[-1] <= rebuilt[split]:
+        raise ValueError('no plausible pace is left to rebuild the jumps from')
     ratio = remaining / (rebuilt[-1] - rebuilt[split])
 
     distances = [
@@ -332,6 +351,10 @@ def climb(
     Each second the runner covers effort / cost(slope) metres, times one
     factor found by bisection so the span ends exactly on high.
     """
+    # The last record's effort carries it nowhere, so without an earlier one
+    # no factor reaches high and the search below would never end.
+    if not any(efforts[:-1]):
+        raise ValueError('a lap records too little speed to take the effort from')
 
     def run(factor: float) -> tuple[list[float], list[float]]:
         distances: list[float] = [low]
@@ -536,7 +559,7 @@ def minutes(seconds_per_km: float) -> str:
     return f'{mins}:{secs:02d}/km'
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         'base', type=Path, help='FIT file with the heart rate to model from'
@@ -591,7 +614,7 @@ def main() -> int:
     parser.add_argument(
         '-n', '--dry-run', action='store_true', help='report the model without writing'
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.out and not args.dry_run:
         parser.error('-o/--out is required unless --dry-run')
@@ -653,11 +676,14 @@ def main() -> int:
             f'{stats["length"] / 1000:.3f} km'
         )
     else:
-        kept_pace = stats['kept_time'] / stats['kept_distance'] * 1000
+        kept = (
+            f', {minutes(stats["kept_time"] / stats["kept_distance"] * 1000)}'
+            if stats['kept_distance'] > 0
+            else ''
+        )
         print(
             f'kept      {stats["kept_distance"] / 1000:.3f} km in '
-            f'{stats["kept_time"] // 60}:{stats["kept_time"] % 60:02d}, '
-            f'{minutes(kept_pace)}'
+            f'{stats["kept_time"] // 60}:{stats["kept_time"] % 60:02d}{kept}'
         )
         rest = (stats['length'] - stats['kept_distance']) / 1000
         if args.keep is not None:

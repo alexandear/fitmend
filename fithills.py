@@ -235,7 +235,7 @@ def name(index: int, count: int) -> str:
     return f'{"descent" if leg else "climb"} {repeat + 1}'
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', type=Path, help='FIT file the session was recorded to')
     parser.add_argument(
@@ -271,7 +271,7 @@ def main() -> int:
     parser.add_argument(
         '-n', '--dry-run', action='store_true', help='report the result without writing'
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.out and not args.dry_run:
         parser.error('-o/--out is required unless --dry-run')
@@ -313,7 +313,7 @@ def main() -> int:
     )
     print(
         f'route     {len(repeated)} points, {stats["length"] / 1000:.3f} km '
-        f'({cumulative[-1] / 1000:.3f} km with {args.repeats} repeats)'
+        f'with {args.repeats} repeats ({cumulative[-1] / 1000:.3f} km once)'
     )
     print(f'recorded  {stats["records"]} records, {stats["recorded"] / 1000:.3f} km')
     for index, lap in enumerate(stats['laps']):
